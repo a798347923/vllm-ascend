@@ -40,7 +40,6 @@ from vllm.distributed.parallel_state import (
     get_dp_group,
     get_pp_group,
     get_tp_group,
-    stateless_init_torch_distributed_process_group,
 )
 from vllm.logger import logger
 from vllm.lora.request import LoRARequest
@@ -80,6 +79,8 @@ from vllm_ascend.worker.descale import (
     gen_local_log2phy_map,
     generate_redundant_expert_ids,
     get_expert_distribution_after_descale,
+    init_dp_cpu_group,
+    init_elastic_info,
     init_ep2dp_map,
     init_global_expert_distribution,
     rebuild_acl_graph,
@@ -161,7 +162,7 @@ class WorkerSentinel(BaseSentinel):
         self.logger("npu restart device %s", self.device.index)
         dp_group = get_dp_group()
         dp_group.destroy_cpu_group()
-        self.worker.init_dp_device_group(self.vllm_config)
+        init_dp_cpu_group(self.vllm_config)
         comm_groups = get_all_model_groups()
         for group in comm_groups:
             torch_npu.distributed.reinit_process_group(group.device_group, False)
@@ -255,7 +256,7 @@ class NPUWorker(WorkerBase):
 
             signal.signal(signal.SIGTERM, signal_handler)
             signal.signal(signal.SIGINT, signal_handler)
-        if self.vllm_config.fault_tolerance.enable_fault_tolerance:
+        if self.vllm_config.fault_tolerance_config.enable_fault_tolerance:
             self.ep2dp_map = init_ep2dp_map(
                 self.vllm_config.parallel_config.data_parallel_size,
                 self.vllm_config.parallel_config.tensor_parallel_size,
@@ -288,6 +289,7 @@ class NPUWorker(WorkerBase):
             self.global_experts_distribution = init_global_expert_distribution(self.global_log2phy_map, ep_size)
             self.log2phy = gen_local_log2phy_map(self.global_log2phy_map)
             self.backup_expert_rank_mapping = {}
+            init_elastic_info(self.use_mask_mc2, ep_size, (self.num_logical_expert + num_redundancy_expert))
 
     def dp_descale(self, exclude_dp_ranks: list[int], vllm_update_config):
         """
@@ -329,13 +331,18 @@ class NPUWorker(WorkerBase):
           metadata are valid.
         """
         # pre-verification and basic configuration
-        assert self.vllm_config.fault_tolerance.enable_fault_tolerance is True, "enable_fault_tolerance is False"
+        assert self.vllm_config.fault_tolerance_config.enable_fault_tolerance is True, "enable_fault_tolerance is False"
         if not self.backup_expert_rank_mapping:
             raise RuntimeError("not load model yet")
         # todo  self.cache_config.gpu_memory_utilization = FAULT_TOLERANCE_MEM_UTILIZATION need to revise later
         # This value will be adjusted automatically in future revisions.
         self.cache_config.gpu_memory_utilization = FAULT_TOLERANCE_MEM_UTILIZATION
         rank = self.vllm_config.parallel_config.data_parallel_rank
+        rank_mapping = vllm_update_config.get("rank_mapping")
+        assert rank_mapping is not None
+        assert type(rank_mapping) is dict
+        new2old_rank_mapping = {new_rank: old_rank for old_rank, new_rank in rank_mapping.items()}
+        old_rank = int(new2old_rank_mapping[rank])
         if hasattr(self.vllm_config.model_config.hf_config, "num_experts"):
             num_logical_expert = self.vllm_config.model_config.hf_config.num_experts
         elif hasattr(self.vllm_config.model_config.hf_config, "n_routed_experts"):
@@ -353,9 +360,9 @@ class NPUWorker(WorkerBase):
                 self.use_mask_mc2,
             )
         )
-        expert_ids_to_save.extend(added_experts.get(rank, []))
+        expert_ids_to_save.extend(added_experts.get(old_rank, []))
         for redundant_expert_id, (redundant_expert_pos, routed_expert_id) in replaced_redundant_experts.get(
-            rank, {}
+            old_rank, {}
         ).items():
             expert_ids_to_save.append(routed_expert_id)
 
@@ -375,30 +382,24 @@ class NPUWorker(WorkerBase):
                 self.model_runner,
                 self.quant,
             )
-            expand_expert_weights(self.model_runner, added_experts, self.quant)
-            reload_fault_expert_weights(
+            expand_expert_weights(self.model_runner, added_experts, self.quant, old_rank)
+            self.global_experts_distribution = reload_fault_expert_weights(
                 self.model_runner,
                 self.global_experts_distribution,
                 self.experts_saved_weights,
-                self.vllm_config,
                 redistributed_experts,
                 added_experts,
                 replaced_redundant_experts,
                 self.quant,
+                old_rank,
             )
-            old_ep_size = (
-                self.vllm_config.parallel_config.data_parallel_size
-                * self.vllm_config.parallel_config.tensor_parallel_size
-            )
+            old_ep_size = len(self.ep2dp_map)
             # update parallel config
             # TODO: When a current vLLM config instance is available (via get_current_vllm_config),
             #       its parallel configuration should also be updated using vllm_update_config.
             update_parallel_config(self.vllm_config, vllm_update_config)
             self.model_runner.dp_size = self.vllm_config.parallel_config.data_parallel_size
             self.model_runner.dp_rank = self.vllm_config.parallel_config.data_parallel_rank
-            rank_mapping = vllm_update_config.get("rank_mapping")
-            assert rank_mapping is not None
-            assert type(rank_mapping) is dict
             self.ep2dp_map = update_ep2dp_map(self.ep2dp_map, exclude_dp_ranks, rank_mapping)
             elastic_info = get_elastic_info()
             num_new_phy_experts = sum(map(len, redistributed_experts.values()))
@@ -419,20 +420,6 @@ class NPUWorker(WorkerBase):
             # rebuild acl_graph
             if not self.model_config.enforce_eager:
                 rebuild_acl_graph(self.use_mask_mc2, self)
-
-    def init_dp_device_group(self, vllm_config: VllmConfig) -> None:
-        # TODO: Temporarily hardcode the port value for debugging. Will replace with get_open_port().
-        get_dp_group().cpu_group = stateless_init_torch_distributed_process_group(
-            vllm_config.parallel_config.data_parallel_master_ip,
-            vllm_config.parallel_config.data_parallel_master_port + 100,
-            vllm_config.parallel_config.data_parallel_rank,
-            vllm_config.parallel_config.data_parallel_size,
-            backend="gloo",
-            fault_tolerance_config=vllm_config.fault_tolerance_config,
-        )
-        timeout = timedelta(seconds=vllm_config.fault_tolerance_config.gloo_comm_timeout)
-        dp_cpu_group = get_dp_group()
-        _set_pg_timeout(timeout=timeout, group=dp_cpu_group.cpu_group)
 
     def uninstall_static_kernel(self):
         import fcntl
@@ -720,7 +707,7 @@ class NPUWorker(WorkerBase):
 
         with context, set_current_vllm_config(self.vllm_config):
             self.model_runner.load_model()
-        if self.vllm_config.fault_tolerance.enable_fault_tolerance:
+        if self.vllm_config.fault_tolerance_config.enable_fault_tolerance:
             dp_size = self.vllm_config.parallel_config.data_parallel_size
             tp_size = self.vllm_config.parallel_config.tensor_parallel_size
             is_a3 = get_ascend_device_type() in {AscendDeviceType.A3}
