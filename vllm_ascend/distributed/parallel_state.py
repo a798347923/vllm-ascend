@@ -39,6 +39,7 @@ def set_elastic_info(elastic_info):
         assert _ELASTIC_INFO.shape == elastic_info.shape
         _ELASTIC_INFO.copy_(elastic_info)
 
+
 _DYNAMIC_EPLB: GroupCoordinator | None = None
 
 
