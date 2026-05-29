@@ -222,7 +222,7 @@ class NPUWorker(WorkerBase):
 
         rank_mapping = scale_down_config.get("rank_mapping")
         assert rank_mapping is not None
-        assert type(rank_mapping) is dict
+        assert isinstance(rank_mapping, dict)
 
         new_dp_rank = rank_mapping[self.parallel_config.data_parallel_rank]
         if hasattr(self.vllm_config.model_config.hf_config, "num_experts"):
