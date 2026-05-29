@@ -36,39 +36,6 @@ _PORTS_FMT = "!2I"
 # TODO: Refactor scale_down.py - use descaler object instead of NpuWorker attrs to streamline code
 
 
-def gen_expert_backup_map(
-    num_experts: int, ep_size: int, num_die_per_npu: int, global_expert_distribution: dict[int, list[int]]
-) -> list[list[int]]:
-    backup_experts = [[] for _ in range(ep_size)]
-    if global_expert_distribution is None:
-        global_expert_distribution = distribute_experts(num_experts, ep_size)
-
-    def get_least_load_backup_rank(exclude_ranks: list[int]) -> int:
-        assert len(exclude_ranks) != ep_size, "At least one backup rank must remain available."
-        min_backup_count = float("inf")
-        optimal_backup_rank = -1
-        for rank in range(ep_size):
-            if rank in exclude_ranks:
-                continue
-            current_backup_count = len(backup_experts[rank])
-            if current_backup_count <= min_backup_count:
-                min_backup_count = current_backup_count
-                optimal_backup_rank = rank
-        return optimal_backup_rank
-
-    for rank_group_start in range(0, ep_size, num_die_per_npu):
-        rank_group_end = min(ep_size, rank_group_start + num_die_per_npu)
-        current_rank_group = list(range(rank_group_start, rank_group_end))
-
-        current_group_experts = []
-        for rank in current_rank_group:
-            current_group_experts.extend(global_expert_distribution[rank])
-        for expert_id in current_group_experts:
-            backup_rank = get_least_load_backup_rank(current_rank_group)
-            backup_experts[backup_rank].append(expert_id)
-    return backup_experts
-
-
 def distribute_experts(global_num_expert: int, ep_size: int) -> dict[int, list[int]]:
     init_global_expert_distribution = {}
     base = global_num_expert // ep_size
