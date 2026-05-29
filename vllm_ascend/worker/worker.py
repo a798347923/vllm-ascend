@@ -221,10 +221,10 @@ class NPUWorker(WorkerBase):
             raise RuntimeError("not load model yet")
 
         rank_mapping = scale_down_config.get("rank_mapping")
-        rank = rank_mapping[self.parallel_config.data_parallel_rank]
         assert rank_mapping is not None
         assert type(rank_mapping) is dict
 
+        new_dp_rank = rank_mapping[self.parallel_config.data_parallel_rank]
         if hasattr(self.vllm_config.model_config.hf_config, "num_experts"):
             num_logical_expert = self.vllm_config.model_config.hf_config.num_experts
         elif hasattr(self.vllm_config.model_config.hf_config, "n_routed_experts"):
@@ -241,7 +241,7 @@ class NPUWorker(WorkerBase):
         ):
             enable_d2d_after_failure = False
         cur_rank_need_load_h2d = get_expert_distribution_after_scale_down(
-            self.model_runner, excluded_ep_ranks, enable_d2d_after_failure, rank
+            self.model_runner, excluded_ep_ranks, enable_d2d_after_failure, new_dp_rank
         )
         num_add_experts_per_rank = self.model_runner.shared_dict["num_add_experts_per_rank"]
 
@@ -265,13 +265,13 @@ class NPUWorker(WorkerBase):
         )
 
         if get_ascend_config().eplb_config.dynamic_eplb:
-            update_eplb_adaptor_info(self.model_runner, num_add_experts_per_rank, rank)
+            update_eplb_adaptor_info(self.model_runner, num_add_experts_per_rank, new_dp_rank)
 
         # allow balanced D2D transmission
         if enable_d2d_after_failure:
             all_layer_log2phy = d2d_transmission_for_scaling_down(self.model_runner)
         else:
-            all_layer_log2phy = gen_all_layer_log2phy(self.model_runner, rank)
+            all_layer_log2phy = gen_all_layer_log2phy(self.model_runner, new_dp_rank)
 
         self.global_experts_distribution = self.model_runner.eplb_process.worker.local2global(
             self.model_runner.shared_dict["expert_maps"]
