@@ -184,8 +184,6 @@ class NPUWorker(WorkerBase):
                 self.vllm_config.parallel_config.data_parallel_size,
                 self.vllm_config.parallel_config.tensor_parallel_size,
             )
-            self.experts_saved_ids = []
-            self.experts_saved_weights = {}
             self.quant = self.model_config.quantization is not None
             if hasattr(self.vllm_config.model_config.hf_config, "num_experts"):
                 self.num_logical_expert = self.vllm_config.model_config.hf_config.num_experts
