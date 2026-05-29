@@ -225,13 +225,8 @@ class NPUWorker(WorkerBase):
         assert isinstance(rank_mapping, dict)
 
         new_dp_rank = rank_mapping[self.parallel_config.data_parallel_rank]
-        if hasattr(self.vllm_config.model_config.hf_config, "num_experts"):
-            num_logical_expert = self.vllm_config.model_config.hf_config.num_experts
-        elif hasattr(self.vllm_config.model_config.hf_config, "n_routed_experts"):
-            num_logical_expert = self.vllm_config.model_config.hf_config.n_routed_experts
-        else:
-            raise ValueError("unknown number of experts")
 
+        num_logical_expert = self.num_logical_expert
         # recalculation of expert distribution
         enable_d2d_after_failure = (
             self.vllm_config.parallel_config.fault_tolerance_config.enable_fault_tolerance_rebalance
