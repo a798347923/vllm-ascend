@@ -433,8 +433,8 @@ def update_elastic_info(
         elastic_info = torch.full((4 + 2 * raw_ep_size,), -1, dtype=torch.int32).npu().contiguous()
     raw_ep_ranks = sorted(ep2dp.keys())
     valid_ep_ranks = [ep for ep in raw_ep_ranks if ep2dp[ep] != -1]
-    descale_ep_size = len(valid_ep_ranks)
-    is_descale = 1 if descale_ep_size < raw_ep_size else 0
+    scaled_down_ep_size = len(valid_ep_ranks)
+    is_scaled_down = 1 if scaled_down_ep_size < raw_ep_size else 0
 
     # Table1: epRankID -> localEpRankId(-1 indicates invalid）
     table1 = torch.full((raw_ep_size,), -1, dtype=torch.int32, device="cpu")
@@ -444,12 +444,16 @@ def update_elastic_info(
     # Table2: localEpRankId -> epRankID(-1 indicates padding）
     table2 = torch.full((raw_ep_size,), -1, dtype=torch.int32, device="cpu")
     for local_ep_rank, ep_rank in enumerate(valid_ep_ranks):
-        if local_ep_rank < descale_ep_size:
+        if local_ep_rank < scaled_down_ep_size:
             table2[local_ep_rank] = ep_rank
 
     # update elastic_info
     new_elastic_info_cpu = torch.cat(
-        [torch.tensor([is_descale, descale_ep_size, share_expert_num, expert_num], dtype=torch.int32), table1, table2],
+        [
+            torch.tensor([is_scaled_down, scaled_down_ep_size, share_expert_num, expert_num], dtype=torch.int32),
+            table1,
+            table2,
+        ],
         dim=0,
     )
     elastic_info.copy_(new_elastic_info_cpu)
