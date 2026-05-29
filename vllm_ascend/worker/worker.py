@@ -78,7 +78,7 @@ from vllm_ascend.worker.scale_down import (
     init_elastic_info,
     init_ep2dp_map,
     reconfigure_moe,
-    reload_fault_expert_weights,
+    reload_expert_weights,
     load_expert_weights_to_cpu,
     update_elastic_info,
     update_ep2dp_map,
@@ -244,17 +244,17 @@ class NPUWorker(WorkerBase):
             raise RuntimeError("only support mask mc2")
 
         # reload fault expert weights
-        self.experts_saved_weights = load_expert_weights_to_cpu(
+        saved_weights = load_expert_weights_to_cpu(
             experts_to_load,
             self.vllm_config,
             self.model_runner,
             self.quant,
         )
 
-        reload_fault_expert_weights(
+        reload_expert_weights(
             self.model_runner,
             experts_to_load,
-            self.experts_saved_weights,
+            saved_weights,
             self.quant,
         )
 

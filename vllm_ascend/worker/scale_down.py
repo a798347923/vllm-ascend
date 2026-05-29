@@ -283,7 +283,7 @@ def dynamic_merge_view(
     return target_tensor
 
 
-def reload_fault_expert_weights(
+def reload_expert_weights(
     model_runner: NPUModelRunner,
     cur_rank_need_load_h2d,
     experts_saved_weights: dict[str, torch.Tensor],
