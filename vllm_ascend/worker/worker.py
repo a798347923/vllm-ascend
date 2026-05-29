@@ -208,7 +208,7 @@ class NPUWorker(WorkerBase):
             self.backup_expert_rank_mapping = False
             init_elastic_info(ep_size, (self.num_logical_expert + num_redundancy_expert))
 
-    def dp_descale(self, exclude_ep_ranks: list[int], vllm_update_config, coord_store):
+    def scale_down(self, exclude_ep_ranks: list[int], vllm_update_config, coord_store):
         """
         Reconfigure data-parallel (DP) layout and MoE expert placement after
         excluding one or more DP ranks (e.g., due to failure).
