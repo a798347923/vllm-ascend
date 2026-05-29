@@ -136,7 +136,8 @@ def get_expert_distribution_after_scale_down(
     model_runner.shared_dict["descale"] = True
     model_runner.shared_dict["enable_d2d_after_failure"] = enable_d2d_after_failure
     model_runner.shared_dict["excluded_dp_ranks"] = exclued_dp_ranks
-    if model_runner.shared_dict["expert_maps"] is None and model_runner.shared_dict["expert_maps"]:
+    expert_maps = model_runner.shared_dict["expert_maps"]
+    if expert_maps is None or (expert_maps.shape == (1, 1, 1) and not expert_maps.any()):
         model_runner.shared_dict["expert_maps"] = get_global_expert_map(model_runner)
 
     eplb_updator.wakeup_eplb_worker()
