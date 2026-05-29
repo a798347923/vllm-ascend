@@ -458,20 +458,6 @@ def update_elastic_info(
     set_elastic_info(elastic_info)
 
 
-def gen_local_log2phy_map(global_log2phy_map: dict[int, list[int]]) -> torch.Tensor:
-    num_logical_exp = len(global_log2phy_map)
-    log2phy = torch.zeros(num_logical_exp, dtype=torch.int32, device="cpu")
-    for log_expert_id in sorted(global_log2phy_map.keys()):
-        replica_list = global_log2phy_map[log_expert_id]
-        # num_replicas = len(replica_list)
-        # phy_id = replica_list[global_rank % num_replicas]
-        # TODO: For now we can only use the 0-th physical expert of each logical expert;
-        # using the two lines above for load balancing causes accuracy issues.
-        phy_id = replica_list[0]
-        log2phy[log_expert_id] = phy_id
-    return log2phy.npu()
-
-
 def reconfigure_moe(
     model_runner: NPUModelRunner,
     vllm_config: VllmConfig,
