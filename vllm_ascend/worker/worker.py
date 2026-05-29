@@ -206,51 +206,21 @@ class NPUWorker(WorkerBase):
             self.model_loaded = False
             init_elastic_info(ep_size, (self.num_logical_expert + num_redundant_experts))
 
-    def scale_down(self, exclude_ep_ranks: list[int], vllm_update_config, coord_store):
+    def scale_down(self, excluded_ep_ranks: list[int], scale_down_config, coord_store):
         """
         Reconfigure data-parallel (DP) layout and MoE expert placement after
         excluding one or more DP ranks (e.g., due to failure).
-        This method is part of the fault-tolerance flow. Given a set of DP
-        ranks to remove from the active data-parallel group, it recomputes
-        and applies a new expert-to-device mapping, updates global and local
-        expert distribution metadata, and adjusts internal flags related to
-        redundant experts and mask-based routing. It may also trigger saving
-        and reloading of expert weights so that remaining devices can take
-        over experts previously hosted on failed or excluded ranks.
-        Parameters
-        ----------
-        exclude_ep_ranks:
-            A collection (e.g., list) of data-parallel ranks that should be
-            excluded from service. These ranks are treated as failed or
-            removed, and their experts are redistributed to remaining ranks.
-        vllm_update_config:
-            Configuration and/or callback handle used to propagate updates to
-            the global vLLM configuration after descaling. This object is
-            expected to be provided by the caller and is used to keep the
-            runtime configuration consistent with the new DP/expert layout.
-        Side Effects
-        ------------
-        - Updates ``self.global_log2phy_map`` and related expert-distribution
-          structures to reflect the new mapping.
-        - May update ``self.use_mask_mc2`` depending on redundant expert
-          usage and hardware support.
-        - Adjusts cache and memory utilization configuration (e.g.,
-          ``self.cache_config.gpu_memory_utilization``).
-        Preconditions
-        -------------
-        - ``self.vllm_config.fault_tolerance.enable_fault_tolerance`` must be
-          ``True`` (enforced by assertion).
-        - The worker must have completed its normal initialization flow,
-          including model loading (e.g., via ``load_model``) and initial
-          expert distribution setup so that expert mappings and backup
-          metadata are valid.
+
+        Args:
+            excluded_ep_ranks: EP ranks to exclude from service.
+            scale_down_config: Dict containing rank_mapping and new parallel config.
+            coord_store: TCP store for coordinating group reinitialization.
         """
-        # pre-verification and basic configuration
         assert self.vllm_config.parallel_config.enable_fault_tolerance is True, "enable_fault_tolerance is False"
         if not self.model_loaded:
             raise RuntimeError("not load model yet")
 
-        rank_mapping = vllm_update_config.get("rank_mapping")
+        rank_mapping = scale_down_config.get("rank_mapping")
         rank = rank_mapping[self.parallel_config.data_parallel_rank]
         assert rank_mapping is not None
         assert type(rank_mapping) is dict
@@ -271,7 +241,7 @@ class NPUWorker(WorkerBase):
         ):
             enable_d2d_after_failure = False
         cur_rank_need_load_h2d = get_expert_distribution_after_scale_down(
-            self.model_runner, exclude_ep_ranks, enable_d2d_after_failure, rank
+            self.model_runner, excluded_ep_ranks, enable_d2d_after_failure, rank
         )
         num_add_experts_per_rank = self.model_runner.shared_dict["num_add_experts_per_rank"]
 
@@ -309,13 +279,13 @@ class NPUWorker(WorkerBase):
 
         old_ep_size = len(self.ep2dp_map)
         # update parallel config
-        update_parallel_config(self.vllm_config, vllm_update_config)
+        update_parallel_config(self.vllm_config, scale_down_config)
         self.model_runner.dp_size = self.vllm_config.parallel_config.data_parallel_size
         self.model_runner.dp_rank = self.vllm_config.parallel_config.data_parallel_rank
         logger.info(
-            f"self.ep2dp_map is {self.ep2dp_map} exclude_ep_ranks is {exclude_ep_ranks} rank_mapping is {rank_mapping}"
+            f"self.ep2dp_map is {self.ep2dp_map} excluded_ep_ranks is {excluded_ep_ranks} rank_mapping is {rank_mapping}"
         )
-        self.ep2dp_map = update_ep2dp_map(self.ep2dp_map, exclude_ep_ranks, rank_mapping)
+        self.ep2dp_map = update_ep2dp_map(self.ep2dp_map, excluded_ep_ranks, rank_mapping)
         elastic_info = get_elastic_info()
         num_new_phy_experts = (self.model_runner.shared_dict["expert_maps"][0] != -1).sum().item()
         update_elastic_info(elastic_info, num_new_phy_experts, old_ep_size, self.ep2dp_map)
