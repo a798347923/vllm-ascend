@@ -68,7 +68,8 @@ from vllm_ascend.utils import (
     get_ascend_device_type,
     register_ascend_customop,
 )
-from vllm_ascend.worker.descale import (
+from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+from vllm_ascend.worker.scale_down import (
     d2d_transmission_for_scaling_down,
     destroy_comm_group,
     gen_all_layer_log2phy,
@@ -84,7 +85,6 @@ from vllm_ascend.worker.descale import (
     update_eplb_adaptor_info,
     update_parallel_config,
 )
-from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 from vllm_ascend.worker.sentinel.npu_worker_sentinel import NPUWorkerSentinel
 
 torch._dynamo.trace_rules.clear_lru_cache()  # noqa: E402

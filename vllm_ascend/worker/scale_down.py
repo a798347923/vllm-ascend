@@ -33,7 +33,7 @@ else:
     NPUWorker = None
 
 _PORTS_FMT = "!2I"
-# TODO: Refactor descale.py - use descaler object instead of NpuWorker attrs to streamline code
+# TODO: Refactor scale_down.py - use descaler object instead of NpuWorker attrs to streamline code
 
 
 def gen_expert_backup_map(
