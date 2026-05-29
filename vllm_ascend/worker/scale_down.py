@@ -27,10 +27,8 @@ from vllm_ascend.eplb.core.eplb_utils import generate_log2phy_map
 
 if TYPE_CHECKING:
     from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
-    from vllm_ascend.worker.worker import NPUWorker
 else:
     NPUModelRunner = None
-    NPUWorker = None
 
 _PORTS_FMT = "!2I"
 # TODO: Refactor scale_down.py - use descaler object instead of NpuWorker attrs to streamline code
