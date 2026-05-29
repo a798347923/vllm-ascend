@@ -39,7 +39,6 @@ from vllm.distributed.parallel_state import (
     get_pp_group,
     get_tp_group,
 )
-from vllm.distributed.utils import stateless_init_torch_distributed_process_group
 from vllm.logger import logger
 from vllm.lora.request import LoRARequest
 from vllm.sequence import IntermediateTensors
@@ -77,9 +76,9 @@ from vllm_ascend.worker.scale_down import (
     init_dp_cpu_group,
     init_elastic_info,
     init_ep2dp_map,
+    load_expert_weights_to_cpu,
     reconfigure_moe,
     reload_expert_weights,
-    load_expert_weights_to_cpu,
     update_elastic_info,
     update_ep2dp_map,
     update_eplb_adaptor_info,
@@ -277,7 +276,9 @@ class NPUWorker(WorkerBase):
         self.model_runner.dp_size = self.vllm_config.parallel_config.data_parallel_size
         self.model_runner.dp_rank = self.vllm_config.parallel_config.data_parallel_rank
         logger.info(
-            f"self.ep2dp_map is {self.ep2dp_map} excluded_ep_ranks is {excluded_ep_ranks} rank_mapping is {rank_mapping}"
+            f"self.ep2dp_map is {self.ep2dp_map} "
+            f"excluded_ep_ranks is {excluded_ep_ranks} "
+            f"rank_mapping is {rank_mapping}"
         )
         self.ep2dp_map = update_ep2dp_map(self.ep2dp_map, excluded_ep_ranks, rank_mapping)
         elastic_info = get_elastic_info()
