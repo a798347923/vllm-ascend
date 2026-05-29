@@ -37,7 +37,7 @@ _PORTS_FMT = "!2I"
 
 
 def distribute_experts(global_num_expert: int, ep_size: int) -> dict[int, list[int]]:
-    init_global_expert_distribution = {}
+    distribution = {}
     base = global_num_expert // ep_size
     remainder = global_num_expert % ep_size
 
@@ -45,9 +45,9 @@ def distribute_experts(global_num_expert: int, ep_size: int) -> dict[int, list[i
     for rank in range(ep_size):
         num = base + (1 if rank < remainder else 0)
         expert_ids = list(range(start_index, start_index + num))
-        init_global_expert_distribution[rank] = expert_ids
+        distribution[rank] = expert_ids
         start_index += num
-    return init_global_expert_distribution
+    return distribution
 
 
 def gen_global_log2phy_map(
