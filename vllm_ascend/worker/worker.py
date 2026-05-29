@@ -233,7 +233,8 @@ class NPUWorker(WorkerBase):
             self.model_runner.shared_dict["moe_load"][0] == 0
         ):
             enable_d2d_rebalance = False
-        cur_rank_need_load_h2d = get_expert_distribution_after_scale_down(
+
+        experts_to_load = get_expert_distribution_after_scale_down(
             self.model_runner, excluded_ep_ranks, enable_d2d_rebalance, new_dp_rank
         )
         num_add_experts_per_rank = self.model_runner.shared_dict["num_add_experts_per_rank"]
@@ -244,7 +245,7 @@ class NPUWorker(WorkerBase):
 
         # reload fault expert weights
         self.experts_saved_weights = save_expert_weights_to_ram(
-            cur_rank_need_load_h2d,
+            experts_to_load,
             self.vllm_config,
             self.model_runner,
             self.quant,
@@ -252,7 +253,7 @@ class NPUWorker(WorkerBase):
 
         reload_fault_expert_weights(
             self.model_runner,
-            cur_rank_need_load_h2d,
+            experts_to_load,
             self.experts_saved_weights,
             self.quant,
         )
