@@ -475,7 +475,7 @@ def gen_local_log2phy_map(global_log2phy_map: dict[int, list[int]]) -> torch.Ten
 
 
 def reconfigure_moe(
-    modelrunner: NPUModelRunner,
+    model_runner: NPUModelRunner,
     vllm_config: VllmConfig,
     num_global_logical_experts: int,
     num_global_new_phy_experts: int,
@@ -487,9 +487,9 @@ def reconfigure_moe(
     new_ep_size = parallel_config.data_parallel_size * parallel_config.tensor_parallel_size
     get_ascend_config().eplb_config.num_redundant_experts = num_global_new_phy_experts - num_global_logical_experts
 
-    moe_moules = [module for module in modelrunner.model.modules() if isinstance(module, FusedMoE)]
+    moe_modules = [module for module in model_runner.model.modules() if isinstance(module, FusedMoE)]
 
-    for cur_layer_id, module in enumerate(moe_moules):
+    for cur_layer_id, module in enumerate(moe_modules):
         module.local_num_experts = num_global_new_phy_experts // new_ep_size
         module.global_num_experts = num_global_new_phy_experts
         module.global_redundant_expert_num = num_global_new_phy_experts - num_global_logical_experts
