@@ -227,16 +227,14 @@ class NPUWorker(WorkerBase):
         new_dp_rank = rank_mapping[self.parallel_config.data_parallel_rank]
 
         num_logical_expert = self.num_logical_expert
-        # recalculation of expert distribution
-        enable_d2d_after_failure = (
-            self.vllm_config.parallel_config.fault_tolerance_config.enable_fault_tolerance_rebalance
-        )
+
+        enable_d2d_rebalance = self.vllm_config.parallel_config.fault_tolerance_config.enable_fault_tolerance_rebalance
         if self.model_runner.shared_dict["moe_load"] is None or torch.all(
             self.model_runner.shared_dict["moe_load"][0] == 0
         ):
-            enable_d2d_after_failure = False
+            enable_d2d_rebalance = False
         cur_rank_need_load_h2d = get_expert_distribution_after_scale_down(
-            self.model_runner, excluded_ep_ranks, enable_d2d_after_failure, new_dp_rank
+            self.model_runner, excluded_ep_ranks, enable_d2d_rebalance, new_dp_rank
         )
         num_add_experts_per_rank = self.model_runner.shared_dict["num_add_experts_per_rank"]
 
@@ -263,7 +261,7 @@ class NPUWorker(WorkerBase):
             update_eplb_adaptor_info(self.model_runner, num_add_experts_per_rank, new_dp_rank)
 
         # allow balanced D2D transmission
-        if enable_d2d_after_failure:
+        if enable_d2d_rebalance:
             all_layer_log2phy = d2d_transmission_for_scaling_down(self.model_runner)
         else:
             all_layer_log2phy = gen_all_layer_log2phy(self.model_runner, new_dp_rank)
