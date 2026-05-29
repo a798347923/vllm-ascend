@@ -394,12 +394,12 @@ def init_ep2dp_map(dp_size: int, tp_size: int) -> dict[int, int]:
 
 def update_ep2dp_map(
     ep2dp_map: dict[int, int],
-    exclude_dp_ranks: list[int],
+    excluded_dp_ranks: list[int],
     rank_mapping: dict[int, int],
 ) -> dict[int, int]:
     for old_ep_rank, dp_rank in ep2dp_map.items():
         if dp_rank != -1:
-            if dp_rank in exclude_dp_ranks:
+            if dp_rank in excluded_dp_ranks:
                 ep2dp_map[old_ep_rank] = -1
             else:
                 ep2dp_map[old_ep_rank] = rank_mapping[dp_rank]

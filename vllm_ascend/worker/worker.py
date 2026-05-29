@@ -297,20 +297,6 @@ class NPUWorker(WorkerBase):
             all_layer_log2phy,
         )
 
-    def init_dp_device_group(self, vllm_config: VllmConfig) -> None:
-        # TODO: Temporarily hardcode the port value for debugging. Will replace with get_open_port().
-        assert self.vllm_config.parallel_config.enable_fault_tolerance is True, "enable_fault_tolerance is False"
-        get_dp_group().cpu_group = stateless_init_torch_distributed_process_group(
-            vllm_config.parallel_config.data_parallel_master_ip,
-            vllm_config.parallel_config.data_parallel_master_port + 100,
-            vllm_config.parallel_config.data_parallel_rank,
-            vllm_config.parallel_config.data_parallel_size,
-            backend="gloo",
-        )
-        timeout = timedelta(seconds=vllm_config.parallel_config.fault_tolerance_config.gloo_comm_timeout)
-        dp_cpu_group = get_dp_group()
-        _set_pg_timeout(timeout=timeout, group=dp_cpu_group.cpu_group)
-
     def uninstall_static_kernel(self):
         import fcntl
         import os
