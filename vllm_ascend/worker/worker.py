@@ -199,12 +199,12 @@ class NPUWorker(WorkerBase):
             )
             additional_config = self.vllm_config.additional_config or {}
             eplb_cfg = additional_config.get("eplb_config", {})
-            num_redundancy_expert = eplb_cfg.get("num_redundant_experts")
-            if num_redundancy_expert and get_ascend_device_type() in {AscendDeviceType.A3}:
+            num_redundant_experts = eplb_cfg.get("num_redundant_experts")
+            if num_redundant_experts and get_ascend_device_type() in {AscendDeviceType.A3}:
                 self.use_mask_mc2 = True
 
             self.backup_expert_rank_mapping = False
-            init_elastic_info(ep_size, (self.num_logical_expert + num_redundancy_expert))
+            init_elastic_info(ep_size, (self.num_logical_expert + num_redundant_experts))
 
     def scale_down(self, exclude_ep_ranks: list[int], vllm_update_config, coord_store):
         """
