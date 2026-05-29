@@ -202,7 +202,7 @@ def init_dp_cpu_group(vllm_config: VllmConfig, coord_store, group_type="normal")
     _set_pg_timeout(timeout=timeout, group=get_dp_group().cpu_group)
 
 
-def save_expert_weights_to_ram(
+def load_expert_weights_to_cpu(
     cur_rank_need_load_h2d,
     vllm_config,
     model_runner,
