@@ -128,7 +128,7 @@ def generate_redundant_expert_ids(num_experts: int, ep_size: int, num_redundant_
     return redundant_ids
 
 
-def get_expert_distribution_after_descale(
+def get_expert_distribution_after_scale_down(
     model_runner,
     exclued_dp_ranks,
     enable_d2d_after_failure,

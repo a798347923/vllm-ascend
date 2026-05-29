@@ -73,7 +73,7 @@ from vllm_ascend.worker.scale_down import (
     d2d_transmission_for_scaling_down,
     destroy_comm_group,
     gen_all_layer_log2phy,
-    get_expert_distribution_after_descale,
+    get_expert_distribution_after_scale_down,
     init_dp_cpu_group,
     init_elastic_info,
     init_ep2dp_map,
@@ -270,7 +270,7 @@ class NPUWorker(WorkerBase):
             self.model_runner.shared_dict["moe_load"][0] == 0
         ):
             enable_d2d_after_failure = False
-        cur_rank_need_load_h2d = get_expert_distribution_after_descale(
+        cur_rank_need_load_h2d = get_expert_distribution_after_scale_down(
             self.model_runner, exclude_ep_ranks, enable_d2d_after_failure, rank
         )
         num_add_experts_per_rank = self.model_runner.shared_dict["num_add_experts_per_rank"]
