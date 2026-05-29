@@ -203,7 +203,7 @@ class NPUWorker(WorkerBase):
             if num_redundant_experts and get_ascend_device_type() in {AscendDeviceType.A3}:
                 self.use_mask_mc2 = True
 
-            self.backup_expert_rank_mapping = False
+            self.model_loaded = False
             init_elastic_info(ep_size, (self.num_logical_expert + num_redundant_experts))
 
     def scale_down(self, exclude_ep_ranks: list[int], vllm_update_config, coord_store):
@@ -247,7 +247,7 @@ class NPUWorker(WorkerBase):
         """
         # pre-verification and basic configuration
         assert self.vllm_config.parallel_config.enable_fault_tolerance is True, "enable_fault_tolerance is False"
-        if not self.backup_expert_rank_mapping:
+        if not self.model_loaded:
             raise RuntimeError("not load model yet")
 
         rank_mapping = vllm_update_config.get("rank_mapping")
@@ -642,7 +642,7 @@ class NPUWorker(WorkerBase):
         with context, set_current_vllm_config(self.vllm_config):
             self.model_runner.load_model()
         if self.vllm_config.parallel_config.enable_fault_tolerance:
-            self.backup_expert_rank_mapping = True
+            self.model_loaded = True
             # todo Hot backup-related code has not yet been ported here.
 
     def compile_or_warm_up_model(self) -> float:
