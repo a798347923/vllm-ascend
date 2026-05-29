@@ -411,22 +411,13 @@ def init_elastic_info(
     phy_experts_num: int,
     share_expert_rank_num: int = 0,
 ):
-    # ----- 1 Basic configuration (first 4 parameters) -----
-    # Meaning: whether to descale (0 = no descale), actual number of ranks after descale
-    # reduction (=ep_size), number of ranks for shared experts,number of MoE experts
-    descale = 0
-    base_config = torch.tensor([descale, ep_size, share_expert_rank_num, phy_experts_num], dtype=torch.int32)
+    is_scaled_down = 0
+    base_config = torch.tensor([is_scaled_down, ep_size, share_expert_rank_num, phy_experts_num], dtype=torch.int32)
 
-    # ----- 2 Mapping tables -----
-    # Table1: epRankID -> localEpRankId(-1 indicates invalid）
     table1 = torch.arange(0, ep_size, dtype=torch.int32)
-    # Table2: localEpRankId -> epRankID(-1 indicates padding）
     table2 = torch.arange(0, ep_size, dtype=torch.int32)
 
-    # ----- 3 Concatenate into a complete 1D Tensor -----
     elastic_info = torch.cat([base_config, table1, table2], dim=0).npu().contiguous()
-
-    # ---- 4 Configure Tensor properties and set global variables
     elastic_info.requires_grad_(False)
     set_elastic_info(elastic_info)
 
