@@ -56,7 +56,6 @@ lib.dcmi_get_device_health.argtypes = [
 ]
 lib.dcmi_get_device_health.restype = c_int
 
-failed_npus = set()
 ALL_NPUS = []
 active_npus = []
 active_npus_lock = threading.Lock()
