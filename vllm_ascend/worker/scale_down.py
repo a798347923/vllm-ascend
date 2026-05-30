@@ -410,10 +410,15 @@ def init_elastic_info(
     phy_experts_num: int,
     share_expert_rank_num: int = 0,
 ):
+    # Basic configuration (first 4 parameters)
+    # Meaning: whether to scale down (0 = no scale down), actual number of ranks after scale down
+    # reduction (=ep_size), number of ranks for shared experts,number of MoE experts
     is_scaled_down = 0
     base_config = torch.tensor([is_scaled_down, ep_size, share_expert_rank_num, phy_experts_num], dtype=torch.int32)
 
+    # Table1: epRankID -> localEpRankId(-1 indicates invalid）
     table1 = torch.arange(0, ep_size, dtype=torch.int32)
+    # Table2: localEpRankId -> epRankID(-1 indicates padding）
     table2 = torch.arange(0, ep_size, dtype=torch.int32)
 
     elastic_info = torch.cat([base_config, table1, table2], dim=0).npu().contiguous()
