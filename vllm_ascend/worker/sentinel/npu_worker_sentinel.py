@@ -195,8 +195,10 @@ class NPUWorkerSentinel(BaseSentinel):
         # Phase 5: Configuration and state update
         old_ep_size = len(self.worker.ep2dp_map)
         scale_down_helper.update_parallel_config(scale_down_config)
-        self.worker.model_runner.dp_size = self.worker.vllm_config.parallel_config.data_parallel_size
-        self.worker.model_runner.dp_rank = self.worker.vllm_config.parallel_config.data_parallel_rank
+        self.dp_size = self.worker.vllm_config.parallel_config.data_parallel_size
+        self.dp_rank = self.worker.vllm_config.parallel_config.data_parallel_rank
+        self.worker.model_runner.dp_size = self.dp_size
+        self.worker.model_runner.dp_rank = self.dp_rank
         logger.info(
             f"ep2dp_map is {self.worker.ep2dp_map} "
             f"excluded_dp_ranks is {excluded_dp_ranks} "
