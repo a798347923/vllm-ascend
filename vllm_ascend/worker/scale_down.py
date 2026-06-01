@@ -69,11 +69,11 @@ _MTP_WEIGHT_PATH_TEMPLATES: dict[frozenset[str], str] = {
 
 def _append_mtp_copies(main_list: list, num_mtp_layers: int) -> None:
     """Append MTP layer copies to main_list by cyclic modulo indexing."""
-    if num_mtp_layers <= 0:
+    if num_mtp_layers <= 0 or not main_list:
         return
     num_main = len(main_list)
     for mtp_idx in range(num_mtp_layers):
-        main_idx = mtp_idx % num_main if num_main > 0 else 0
+        main_idx = mtp_idx % num_main
         item = main_list[main_idx]
         main_list.append(item.clone() if hasattr(item, "clone") else copy(item))
 
