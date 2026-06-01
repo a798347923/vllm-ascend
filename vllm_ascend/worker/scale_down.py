@@ -468,7 +468,8 @@ class ScaleDownHelper:
             draft_weight_iter = model_loader.get_all_weights(self.vllm_config.model_config, drafter.model)
             for weight_name, weight_tensor in draft_weight_iter:
                 if weight_name in weights_to_save and weight_name not in saved_weights:
-                    weight_tensor = weight_tensor.transpose(0, 1).contiguous()
+                    if weight_tensor.ndim >= 2:
+                        weight_tensor = weight_tensor.transpose(0, 1).contiguous()
                     if any(weight_name.endswith(suffix) for suffix in QUANT_WEIGHT_SUFFIXES):
                         weight_tensor = torch.squeeze(weight_tensor)
                     saved_weights[weight_name] = weight_tensor
@@ -556,7 +557,7 @@ class ScaleDownHelper:
                 if isinstance(module, FusedMoE):
                     if cur_layer_id < len(experts_to_load) and experts_to_load[cur_layer_id] is not None:
                         for slot_pos, expert_id in experts_to_load[cur_layer_id]:
-                            _load_single_expert(expert_id=expert_id, target_index=slot_pos, quant=self.quant)
+                            _load_single_expert(expert_id=expert_id, target_index=slot_pos)
                     cur_layer_id += 1
 
     def update_eplb_adaptor_info(self, num_add_experts_per_rank, rank):
