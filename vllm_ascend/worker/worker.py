@@ -68,8 +68,8 @@ from vllm_ascend.utils import (
     register_ascend_customop,
 )
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
-from vllm_ascend.worker.scale_down import init_elastic_info, init_ep2dp_map
 from vllm_ascend.worker.sentinel.npu_worker_sentinel import NPUWorkerSentinel
+from vllm_ascend.worker.sentinel.scale_down import init_elastic_info, init_ep2dp_map
 
 torch._dynamo.trace_rules.clear_lru_cache()  # noqa: E402
 from torch._dynamo.variables import TorchInGraphFunctionVariable  # noqa: E402
