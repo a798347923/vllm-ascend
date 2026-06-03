@@ -676,7 +676,6 @@ def init_dp_cpu_group_impl(vllm_config: VllmConfig, coord_store, group_type="nor
         )
         get_dynamic_eplb_group().group_type = group_type
 
-    # TODO: Temporarily hardcode the port value for debugging. Will replace with get_open_port().
     get_dp_group().cpu_group = stateless_init_torch_distributed_process_group(
         vllm_config.parallel_config.data_parallel_master_ip,
         dp_port,
