@@ -282,6 +282,7 @@ def monitor_machine_fault(host, port, recover_timeout, interval_time):
                 print(f"device id: {device[0]} card_id: {device[1]} CardDropFault")
 
         exclude_dp_ranks.update([get_dp_by_npu(npu) for npu in failed_npus])
+        exclude_dp_ranks.discard(-1)
 
         if exclude_dp_ranks:
             pause(host, port, recover_timeout, list(exclude_dp_ranks))
