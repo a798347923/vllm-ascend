@@ -470,8 +470,13 @@ class ScaleDownHelper:
             if local_ep_rank < scaled_down_ep_size:
                 table2[local_ep_rank] = ep_rank
         new_elastic_info_cpu = torch.cat(
-            [torch.tensor([is_scaled_down, scaled_down_ep_size, share_expert_num, expert_num], dtype=torch.int32),
-             table1, table2], dim=0)
+            [
+                torch.tensor([is_scaled_down, scaled_down_ep_size, share_expert_num, expert_num], dtype=torch.int32),
+                table1,
+                table2,
+            ],
+            dim=0,
+        )
         elastic_info.copy_(new_elastic_info_cpu)
         set_elastic_info(elastic_info)
 
@@ -498,16 +503,24 @@ class ScaleDownHelper:
         eplb_port, dp_port = ports
         if get_ascend_config().eplb_config.dynamic_eplb:
             get_dynamic_eplb_group().cpu_group = stateless_init_torch_distributed_process_group(
-                vllm_config.parallel_config.data_parallel_master_ip, eplb_port,
-                vllm_config.parallel_config.data_parallel_rank, vllm_config.parallel_config.data_parallel_size,
+                vllm_config.parallel_config.data_parallel_master_ip,
+                eplb_port,
+                vllm_config.parallel_config.data_parallel_rank,
+                vllm_config.parallel_config.data_parallel_size,
                 listen_socket=listen_sockets[0] if listen_sockets else None,
-                backend="gloo", group_name=_get_unique_name("eplb_group"))
+                backend="gloo",
+                group_name=_get_unique_name("eplb_group"),
+            )
             _set_pg_timeout(timeout=timeout, group=get_dynamic_eplb_group().cpu_group)
         get_dp_group().cpu_group = stateless_init_torch_distributed_process_group(
-            vllm_config.parallel_config.data_parallel_master_ip, dp_port,
-            vllm_config.parallel_config.data_parallel_rank, vllm_config.parallel_config.data_parallel_size,
-            backend="gloo", listen_socket=listen_sockets[1] if listen_sockets else None,
-            group_name=_get_unique_name("dp_group"))
+            vllm_config.parallel_config.data_parallel_master_ip,
+            dp_port,
+            vllm_config.parallel_config.data_parallel_rank,
+            vllm_config.parallel_config.data_parallel_size,
+            backend="gloo",
+            listen_socket=listen_sockets[1] if listen_sockets else None,
+            group_name=_get_unique_name("dp_group"),
+        )
         _set_pg_timeout(timeout=timeout, group=get_dp_group().cpu_group)
         for sock in listen_sockets:
             with suppress(OSError):
@@ -515,6 +528,7 @@ class ScaleDownHelper:
 
     def reconfigure_moe(self, num_logical_expert, num_new_phy_experts, all_layer_log2phy):
         import vllm.envs as envs
+
         model_runner = self.model_runner
         vllm_config = self.vllm_config
         parallel_config = vllm_config.parallel_config
@@ -529,21 +543,30 @@ class ScaleDownHelper:
             module.global_num_experts = num_new_phy_experts
             module.global_redundant_expert_num = num_new_phy_experts - num_logical_expert
             module.moe_parallel_config = FusedMoEParallelConfig.make(
-                tp_size_=get_tp_group().world_size, pcp_size_=get_pcp_group().world_size,
-                dp_size_=get_dp_group().world_size, vllm_parallel_config=parallel_config,
-                sp_size_=module.sp_size)
+                tp_size_=get_tp_group().world_size,
+                pcp_size_=get_pcp_group().world_size,
+                dp_size_=get_dp_group().world_size,
+                vllm_parallel_config=parallel_config,
+                sp_size_=module.sp_size,
+            )
             module.moe_config = FusedMoEConfig(
-                num_experts=module.global_num_experts, experts_per_token=module.top_k,
+                num_experts=module.global_num_experts,
+                experts_per_token=module.top_k,
                 hidden_dim=module.hidden_size,
                 intermediate_size_per_partition=module.intermediate_size_per_partition,
                 num_local_experts=module.local_num_experts,
                 num_logical_experts=num_logical_expert,
                 moe_parallel_config=module.moe_parallel_config,
-                in_dtype=module.vllm_config.model_config.dtype, router_logits_dtype=None,
-                max_num_tokens=envs.VLLM_MOE_DP_CHUNK_SIZE, has_bias=False,
-                is_act_and_mul=True, is_lora_enabled=module.vllm_config.lora_config is not None,
-                activation=module.activation, device=module.vllm_config.device_config.device,
-                routing_method=module.routing_method_type)
+                in_dtype=module.vllm_config.model_config.dtype,
+                router_logits_dtype=None,
+                max_num_tokens=envs.VLLM_MOE_DP_CHUNK_SIZE,
+                has_bias=False,
+                is_act_and_mul=True,
+                is_lora_enabled=module.vllm_config.lora_config is not None,
+                activation=module.activation,
+                device=module.vllm_config.device_config.device,
+                routing_method=module.routing_method_type,
+            )
             module.moe_config.num_experts = module.global_num_experts
             module.moe_config.num_local_experts = module.local_num_experts
             module.moe_config.global_redundant_expert_num = module.global_redundant_expert_num
