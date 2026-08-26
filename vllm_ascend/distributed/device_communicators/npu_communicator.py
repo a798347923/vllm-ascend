@@ -19,6 +19,10 @@ import torch
 import torch.distributed as dist
 from vllm.distributed.device_communicators.base_device_communicator import DeviceCommunicatorBase
 
+from vllm_ascend.ascend_forward_context import MoECommType
+from vllm_ascend.ops.fused_moe.moe_comm_method import get_moe_comm_method
+from vllm_ascend.worker.sentinel.eplb_redistribute import _mega_moe_in_use
+
 # elastic_info tensor layout consumed by the MC2 dispatch/combine operators:
 # [is_scaling_down, scaled-down ep world size, shared_expert_rank_num,
 #  num_physical_experts] + table1(ep_world_size) + table2(ep_world_size),
@@ -66,11 +70,26 @@ class _NpuAll2AllManager:
 
     def update_mask(self, rank: int, masked: bool = True) -> None:
         """Mark an EP rank dead/alive and rebuild elastic_info in place."""
+        if _mega_moe_in_use():
+            self._update_mega_moe_mask(rank, masked)
+            return
         if masked:
             self._dead.add(rank)
         else:
             self._dead.discard(rank)
         self._rebuild_elastic_info()
+
+    def _update_mega_moe_mask(self, rank: int, masked: bool) -> None:
+        """Update the mega_Moe SymmBuffer mask for one EP rank"""
+        impl = get_moe_comm_method(MoECommType.FUSED_MC2)
+        sym_buffer = getattr(impl, "mega_moe_symm_buffer", None) if impl is not None else None
+        if sym_buffer is None:
+            raise RuntimeError(
+                "mega_moe is in use but its SymmBuffer is not initialized; "
+                "scale_down cannot mask dead EP ranks. A warmup forward is required."
+            )
+        sym_buffer.update_mask_buffer(rank, masked)
+        torch.npu.synchronize()
 
     def query_active_mask(self) -> torch.Tensor:
         """Per-EP-rank mask (1=dead, 0=live) as a CPU tensor, matching the

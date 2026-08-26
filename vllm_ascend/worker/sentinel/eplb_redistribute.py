@@ -50,6 +50,7 @@ from vllm.v1.worker.sentinel.eplb_redistribute import (
     redistribute_expert_placement,
 )
 
+from vllm_ascend.ascend_config import _MEGA_MOE_SUPPORTED, get_ascend_config
 from vllm_ascend.ops.fused_moe.routed_experts import AscendUnquantizedFusedMoEMethod
 from vllm_ascend.quantization.methods.w8a8_dynamic import (
     AscendW8A8DynamicFusedMoEMethod,
@@ -58,6 +59,7 @@ from vllm_ascend.quantization.methods.w8a8_dynamic import (
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, maybe_trans_nz
 
 __all__ = [
+    "_mega_moe_in_use",
     "build_local_reload_plan",
     "check_redundancy_sufficient",
     "compute_dead_ep_ranks",
@@ -67,6 +69,14 @@ __all__ = [
     "redistribute_expert_placement",
     "reload_experts_from_disk",
 ]
+
+
+def _mega_moe_in_use() -> bool:
+    """Whether the mega_moe kernel (vs. the MC2 dispatch_ffn_combine) drives
+    scale-down masking on this worker.
+    """
+    return _MEGA_MOE_SUPPORTED and get_ascend_config().enable_fused_mc2 == 1
+
 
 # Checkpoint name suffixes (relative to "<layer_name>.<expert_id>.") of the
 # tensors a reload may consume. weight_offset is loaded at startup but never

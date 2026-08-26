@@ -15,6 +15,7 @@ from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.distributed.eplb_state import refresh_model_routing_tables
 from vllm_ascend.distributed.parallel_state import get_mc2_group
 from vllm_ascend.worker.sentinel.eplb_redistribute import (
+    _mega_moe_in_use,
     build_local_reload_plan,
     check_redundancy_sufficient,
     compute_dead_ep_ranks,
@@ -118,16 +119,18 @@ class WorkerSentinel(GPUWorkerSentinel):
                 "[FT] scale_down requires EPLB with num_redundant_experts > 0 to re-host the dead rank's experts."
             )
         ascend_config = get_ascend_config()
-        if ascend_config.enable_fused_mc2:
+        mega_moe = _mega_moe_in_use()
+        if ascend_config.enable_fused_mc2 and not mega_moe:
             raise ValueError(
-                "[FT] scale_down is not supported with enable_fused_mc2: the "
-                "fused dispatch_ffn_combine operators take no elastic_info."
+                "[FT] scale_down is not supported with enable_fused_mc2: for "
+                " the fused dispatch_ffn_combine operators (they take no "
+                "elastic_info). mega_moe scale-down is handled via SymBuffer"
             )
         if ascend_config.enable_mc2_hierarchy_comm:
             raise ValueError(
                 "[FT] scale_down (elastic_info) is mutually exclusive with mc2 hierarchy comm (comm_alg='hierarchy')."
             )
-        if not hasattr(torch_npu, "npu_moe_distribute_dispatch_v2"):
+        if not mega_moe and not hasattr(torch_npu, "npu_moe_distribute_dispatch_v2"):
             raise ValueError(
                 "[FT] scale_down requires npu_moe_distribute_dispatch_v2 "
                 "(aclnn V3+); please upgrade the CANN/torch_npu version."
@@ -163,6 +166,7 @@ class WorkerSentinel(GPUWorkerSentinel):
         num_local_experts = p2l.shape[1] // ep_world_size
         # The original EP rank; never rewritten by scale-down.
         ep_rank = get_mc2_group().rank_in_group
+        mega_moe = _mega_moe_in_use()
 
         p2l_before = p2l.cpu().clone()
         mark_dead_expert_slots_inplace(p2l, dead_ep_ranks, num_local_experts)
@@ -170,21 +174,23 @@ class WorkerSentinel(GPUWorkerSentinel):
         rebuild_logical_expert_maps(p2l, l2p, lrc)
         # Propagate the new placement into the Ascend routing tables; the
         # table shape is unchanged so this copy_'s into the storage captured
-        # by graphs.
+        # by graphs. mega_moe shares this EPLB structure and routing-table
+        # mapping (topk_ids already carry full-width physical ids).
         refresh_model_routing_tables(eplb_model_state)
 
-        # The MC2 kernels require the densified physical-id space while scaled
-        # down (dispatch routes via table2[expert_id // num_local]; combine
-        # silently drops ids >= the shrunk physical expert count). The refresh
-        # above rebuilds the tables with original full-width ids, so renumber
-        # the kernel-facing values in place. Original ids only route correctly
-        # when the dead ranks are a suffix; a dead rank in the middle would
-        # misroute tokens or crash the kernel on a -1 rank lookup.
-        orig_to_dense_rank = get_ep_all2all_manager().to_densified_rank_table()
-        for layer in eplb_model_state.model.moe_layers:
-            routing_table = getattr(getattr(layer, "eplb_state", None), "expert_replica_routing_table", None)
-            if routing_table is not None:
-                densify_routing_table_physical_ids(routing_table, orig_to_dense_rank, num_local_experts)
+        if not mega_moe:
+            # The MC2 kernels require the densified physical-id space while scaled
+            # down (dispatch routes via table2[expert_id // num_local]; combine
+            # silently drops ids >= the shrunk physical expert count). The refresh
+            # above rebuilds the tables with original full-width ids, so renumber
+            # the kernel-facing values in place. Original ids only route correctly
+            # when the dead ranks are a suffix; a dead rank in the middle would
+            # misroute tokens or crash the kernel on a -1 rank lookup.
+            orig_to_dense_rank = get_ep_all2all_manager().to_densified_rank_table()
+            for layer in eplb_model_state.model.moe_layers:
+                routing_table = getattr(getattr(layer, "eplb_state", None), "expert_replica_routing_table", None)
+                if routing_table is not None:
+                    densify_routing_table_physical_ids(routing_table, orig_to_dense_rank, num_local_experts)
 
         reload_plan = build_local_reload_plan(p2l_before, p2l.cpu(), ep_rank, num_local_experts)
         if reload_plan:
@@ -194,11 +200,14 @@ class WorkerSentinel(GPUWorkerSentinel):
                 reload_plan,
             )
 
-        # Shrink the physical-expert width the MC2 kernels see so it matches
-        # the surviving slots; this also flips elastic_info into scaling-down
-        # mode (the mask replayed during retry kept the flag at 0 until the
-        # new width was known).
-        get_ep_all2all_manager().set_num_physical_experts((ep_world_size - len(dead_ep_ranks)) * num_local_experts)
+        if not mega_moe:
+            # Shrink the physical-expert width the MC2 kernels see so it matches
+            # the surviving slots; this also flips elastic_info into scaling-down
+            # mode (the mask replayed during retry kept the flag at 0 until the
+            # new width was known).
+            get_ep_all2all_manager().set_num_physical_experts(
+                (ep_world_size - len(dead_ep_ranks)) * num_local_experts
+            )
 
         logger.info(
             "[FT] Expert redistribution: num_logical=%d, ep_world_size=%d, num_local_experts=%d, reloaded_slots=%s",

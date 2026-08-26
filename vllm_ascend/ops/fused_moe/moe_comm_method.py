@@ -323,7 +323,7 @@ class FusedMC2CommImpl(MoECommMethod):
             self.token_dispatcher.global_bs,
         )
 
-        return self.get_symm_buffer_for_mega_moe(
+        self.mega_moe_symm_buffer = self.get_symm_buffer_for_mega_moe(
             group,
             num_experts,
             num_max_tokens_per_rank,
@@ -334,6 +334,16 @@ class FusedMC2CommImpl(MoECommMethod):
             dispatch_quant_mode=dispatch_quant_mode,
             dispatch_quant_out_dtype=dispatch_quant_out_dtype,
         )
+
+        # Pre-allocate the mask_buffer(all live) before acl graph capture
+        try:
+            _sym_buffer = self.mega_moe_symm_buffer
+            with torch.inference_mode(False):
+                for _rank in range(_sym_buffer.ep_world_size):
+                    _sym_buffer.update_mask_buffer(_rank, False)
+        except Exception as _e:
+            logger.warning("MegaMoe mask_buffer pre-allocation skipped: %s", _e)
+        return self.mega_moe_symm_buffer
 
     def _apply_cann_mega_moe(
         self,
@@ -369,7 +379,8 @@ class FusedMC2CommImpl(MoECommMethod):
             self.mega_moe_symm_buffer.dispatch_quant_mode = dispatch_quant_mode
             self.mega_moe_symm_buffer.dispatch_quant_out_dtype = dispatch_quant_out_dtype
 
-        activation_clamp = self.swiglu_limit if self.swiglu_limit > 0 else None
+        # ==== WARNING None -> 3.4028234663852886e38 (FLOAT32_MAX) FOR NOW ======
+        activation_clamp = self.swiglu_limit if self.swiglu_limit > 0 else 3.4028234663852886e38
         x_active_mask = None
         if self.token_dispatcher.global_bs == 0 and fused_experts_input.routing.mc2_mask is not None:
             # mc2_mask comes from the reserved bool buffer in

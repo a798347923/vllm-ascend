@@ -57,6 +57,18 @@ def get_mrv2_in_profile_run() -> bool:
     return _MRV2_IN_PROFILE_RUN.get()
 
 
+def use_cann_megamoe(vllm_config: VllmConfig) -> bool:
+    return (
+        _MEGA_MOE_SUPPORTED
+        and get_ascend_device_type() == AscendDeviceType.A3
+        and get_ascend_config().enable_fused_mc2 == 1
+        and is_moe_model(vllm_config)
+        and vllm_config.parallel_config.enable_expert_parallel
+        and 1 < get_ep_group().world_size <= 64
+        and getattr(vllm_config, "lora_config", None) is None
+    )
+
+
 @contextmanager
 def set_ascend_forward_context(
     attn_metadata: Any,
