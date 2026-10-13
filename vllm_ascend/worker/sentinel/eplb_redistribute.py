@@ -34,7 +34,7 @@ from vllm_ascend.quantization.methods.w8a8.w8a8_dynamic import (
     AscendW8A8DynamicFusedMoEMethod,
     scale_from_float_to_int64,
 )
-from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, ASCEND_QUANTIZATION_METHOD, maybe_trans_nz
+from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, COMPRESSED_TENSORS_METHOD, maybe_trans_nz
 
 __all__ = [
     "build_orig_to_dense_rank_table",
@@ -235,12 +235,12 @@ def _reinterpret_fp32_to_int64(t: torch.Tensor) -> torch.Tensor:
 
 
 def _w4a8_scale_bias_modelslim(w2_scale_bias: torch.Tensor) -> torch.Tensor:
-    """modelslim scale_bias broadcast-sum: [out, 16//tp] -> [out]."""
+    """modelslim scale_bias: reduce the replica/group dim, [out, 16//tp] -> [out]."""
     return w2_scale_bias.transpose(0, 1).contiguous().sum(0)
 
 
 def _w4a8_scale_bias_ct(weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """compressed_tensors scale_bias: 8 * sum over last dim of (w * scale)."""
+    """compressed_tensors scale_bias: 8 * scale * sum over the input dim."""
     return 8 * (weight.to(torch.float32) * scale.to(torch.float32)).sum(0)
 
 
@@ -269,59 +269,47 @@ def _assemble_expert(
     routed = routed_layers[layer_idx]
     w8a8 = quant_type is AscendW8A8DynamicFusedMoEMethod
     w4a8 = quant_type is AscendW4A8DynamicFusedMoEMethod
-    if not w8a8 and (getattr(routed, "w13_bias", None) is not None or getattr(routed, "w2_bias", None) is not None):
+    if getattr(routed, "w13_bias", None) is not None or getattr(routed, "w2_bias", None) is not None:
         raise NotImplementedError("[FT] scale_down weight reload does not support MoE expert bias yet.")
     tp_rank, tp_size = _tp_shard_info(routed)
     tensors = buckets[(layer_idx, logical_id)]
 
-    if not w4a8:
-        w13 = _gather_w13(tensors, tp_rank, tp_size).transpose(0, 1).contiguous()
-        w2 = _shard_col(tensors[_W2_WEIGHT_SUFFIX], tp_rank, tp_size).transpose(0, 1).contiguous()
-        if not w8a8:
-            return w13, w2, None, None, None, None
-        return (
-            w13,
-            w2,
-            _gather_w13_scale(tensors, tp_rank, tp_size),
-            tensors[_W2_SCALE_SUFFIX].view(-1),
-            None,
-            None,
-        )
+    w13 = _gather_w13(tensors, tp_rank, tp_size).transpose(0, 1).contiguous()
+    w2 = _shard_col(tensors[_W2_WEIGHT_SUFFIX], tp_rank, tp_size).transpose(0, 1).contiguous()
+
+    if not w8a8 and not w4a8:
+        return w13, w2, None, None, None, None
+
+    w13_scale_src = _gather_w13_scale(tensors, tp_rank, tp_size)
+    w2_scale_src = tensors[_W2_SCALE_SUFFIX]
+
+    if w8a8:
+        return w13, w2, w13_scale_src, w2_scale_src.view(-1), None, None
 
     # W4A8: the scheme instance carries the sub-format ("ascend" modelslim vs
     # "compressed-tensors"); both converge to identical runtime shapes below.
     method = getattr(routed.quant_method, "quant_method", routed.quant_method)
-    modelslim = method.quant_method == ASCEND_QUANTIZATION_METHOD
-
-    # Weights are int8; modelslim packs 2 int4/byte already, compressed_tensors
-    # stores one int4/int8 and is packed on the fly.
-    w13_t = _gather_w13(tensors, tp_rank, tp_size).transpose(0, 1).contiguous()
-    w2_t = (
-        _shard_col(tensors[_W2_WEIGHT_SUFFIX], tp_rank, tp_size).transpose(0, 1).contiguous()
-    )  # [I, H] CT | [I, H/2] MS
+    modelslim = method.quant_method != COMPRESSED_TENSORS_METHOD
 
     # Scales: bit-reinterpret fp32 -> int64 (w13 already flattened to [2I];
     # w2 kept as [1, H] for npu_grouped_matmul).
-    w13_scale_src = _gather_w13_scale(tensors, tp_rank, tp_size).to(torch.float32)
-    w2_scale_src = tensors[_W2_SCALE_SUFFIX].to(torch.float32)  # [H, 1] fp32
-    w13_scale = _reinterpret_fp32_to_int64(w13_scale_src)
-    w2_scale = _reinterpret_fp32_to_int64(w2_scale_src.view(1, -1))
+    w13_scale = _reinterpret_fp32_to_int64(w13_scale_src.to(torch.float32))
+    w2_scale = _reinterpret_fp32_to_int64(w2_scale_src.to(torch.float32).view(1, -1))
 
     if modelslim:
-        # weights already packed; scale_bias read from checkpoint (the
-        # transpose+sum is a no-op on the singleton "1"/"16//tp" middle dim).
-        w13 = w13_t
-        w2 = w2_t
+        # weights already packed; scale_bias read from checkpoint. w13 is
+        # already 1-D([2I]); w2's checkpoint [out, 16//tp] is reduced over the
+        # replica/group dim down to [out]
         w13_scale_bias = _gather_w13_scale_bias(tensors, tp_rank, tp_size).view(-1)
         w2_scale_bias = _w4a8_scale_bias_modelslim(tensors[_W2_SCALE_BIAS_SUFFIX])
     else:
         # compressed_tensors: derive scale_bias on the transposed *unpacked*
         # weights (before packing; the raw scale is bf16 in the checkpoint and
         # broadcasts against [H/2I, ...] once its size-1 dim is dropped).
-        w13_scale_bias = _w4a8_scale_bias_ct(w13_t, w13_scale_src)
-        w2_scale_bias = _w4a8_scale_bias_ct(w2_t, w2_scale_src.view(-1))
-        w13 = _pack_int4_to_int8(w13_t)
-        w2 = _pack_int4_to_int8(w2_t)
+        w13_scale_bias = _w4a8_scale_bias_ct(w13, w13_scale_src.to(torch.float32))
+        w2_scale_bias = _w4a8_scale_bias_ct(w2, w2_scale_src.to(torch.float32).view(-1))
+        w13 = _pack_int4_to_int8(w13)
+        w2 = _pack_int4_to_int8(w2)
     return w13, w2, w13_scale, w2_scale, w13_scale_bias, w2_scale_bias
 
 
