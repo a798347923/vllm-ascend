@@ -276,8 +276,7 @@ def _assemble_expert(
     w2_scale = _reinterpret_fp32_to_int64(w2_scale_src.to(torch.float32).view(1, -1))
 
     if not modelslim:
-        raise NotImplementedError("[FT] scale_down W4A8 weight reload does not support"
-                                  "COMPRESSED_TENSORS foemat yet.")
+        raise NotImplementedError("[FT] scale_down W4A8 weight reload does not supportCOMPRESSED_TENSORS foemat yet.")
     # weights already packed; scale_bias read from checkpoint. w13 is
     # already 1-D([2I]); w2's checkpoint [out, 16//tp] is reduced over the
     # replica/group dim down to [out]
