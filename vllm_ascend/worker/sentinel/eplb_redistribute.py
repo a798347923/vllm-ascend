@@ -207,22 +207,6 @@ def _gather_w13_scale_bias(
     return torch.cat([_shard_row(gate, tp_rank, tp_size), _shard_row(up, tp_rank, tp_size)], dim=0)
 
 
-def _pack_int4_to_int8(weight: torch.Tensor) -> torch.Tensor:
-    """Pack pairs of adjacent int4 values into one int8, halving the last dim.
-
-    Mirrors ``AscendW4A8DynamicFusedMoEMethod._pack_int4_to_int8``; only the
-    compressed_tensors format needs it (its checkpoint stores one int4 per
-    int8), modelslim checkpoints are already packed.
-    """
-    shape = weight.shape
-    flat = weight.reshape(-1, 2)
-    weight0 = flat[:, :1]
-    weight1 = flat[:, 1:]
-    packed = torch.bitwise_or(torch.bitwise_left_shift(weight1, 4), weight0 & 0b00001111)
-    # clone() to break the view chain.
-    return packed.reshape(shape[:-1] + (shape[-1] // 2,)).clone()
-
-
 def _reinterpret_fp32_to_int64(t: torch.Tensor) -> torch.Tensor:
     """Bit-preserving fp32 -> int64 cast (raw scale bits stored as int64).
 
@@ -237,11 +221,6 @@ def _reinterpret_fp32_to_int64(t: torch.Tensor) -> torch.Tensor:
 def _w4a8_scale_bias_modelslim(w2_scale_bias: torch.Tensor) -> torch.Tensor:
     """modelslim scale_bias: reduce the replica/group dim, [out, 16//tp] -> [out]."""
     return w2_scale_bias.transpose(0, 1).contiguous().sum(0)
-
-
-def _w4a8_scale_bias_ct(weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """compressed_tensors scale_bias: 8 * scale * sum over the input dim."""
-    return 8 * (weight.to(torch.float32) * scale.to(torch.float32)).sum(0)
 
 
 def _assemble_expert(
@@ -296,20 +275,15 @@ def _assemble_expert(
     w13_scale = _reinterpret_fp32_to_int64(w13_scale_src.to(torch.float32))
     w2_scale = _reinterpret_fp32_to_int64(w2_scale_src.to(torch.float32).view(1, -1))
 
-    if modelslim:
-        # weights already packed; scale_bias read from checkpoint. w13 is
-        # already 1-D([2I]); w2's checkpoint [out, 16//tp] is reduced over the
-        # replica/group dim down to [out]
-        w13_scale_bias = _gather_w13_scale_bias(tensors, tp_rank, tp_size).view(-1)
-        w2_scale_bias = _w4a8_scale_bias_modelslim(tensors[_W2_SCALE_BIAS_SUFFIX])
-    else:
-        # compressed_tensors: derive scale_bias on the transposed *unpacked*
-        # weights (before packing; the raw scale is bf16 in the checkpoint and
-        # broadcasts against [H/2I, ...] once its size-1 dim is dropped).
-        w13_scale_bias = _w4a8_scale_bias_ct(w13, w13_scale_src.to(torch.float32))
-        w2_scale_bias = _w4a8_scale_bias_ct(w2, w2_scale_src.to(torch.float32).view(-1))
-        w13 = _pack_int4_to_int8(w13)
-        w2 = _pack_int4_to_int8(w2)
+    if not modelslim:
+        raise NotImplementedError("[FT] scale_down W4A8 weight reload does not support"
+                                  "COMPRESSED_TENSORS foemat yet.")
+    # weights already packed; scale_bias read from checkpoint. w13 is
+    # already 1-D([2I]); w2's checkpoint [out, 16//tp] is reduced over the
+    # replica/group dim down to [out]
+    w13_scale_bias = _gather_w13_scale_bias(tensors, tp_rank, tp_size).view(-1)
+    w2_scale_bias = _w4a8_scale_bias_modelslim(tensors[_W2_SCALE_BIAS_SUFFIX])
+
     return w13, w2, w13_scale, w2_scale, w13_scale_bias, w2_scale_bias
 
 
