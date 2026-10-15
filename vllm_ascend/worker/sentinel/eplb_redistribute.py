@@ -261,12 +261,16 @@ def _assemble_expert(
     if w4a8:
         method = getattr(routed.quant_method, "quant_method", routed.quant_method)
         if method.quant_method == COMPRESSED_TENSORS_METHOD:
-            raise NotImplementedError("[FT] scale_down W4A8 weight reload does not support"
-                                      "COMPRESSED_TENSORS foemat yet.")
+            raise NotImplementedError(
+                "[FT] scale_down W4A8 weight reload does not supportCOMPRESSED_TENSORS foemat yet."
+            )
         w13_scale_bias_raw = _gather_w13_scale_bias(routed, tp_rank, tp_size)
         processed = method._process_modelslim_weights(
-            w13_raw.unsqueeze(0), w2_raw.unsqueeze(0), w13_scale_src.unsqueeze(0),
-            w2_scale_src.unsqueeze(0), w13_scale_bias_raw.unsqueeze(0),
+            w13_raw.unsqueeze(0),
+            w2_raw.unsqueeze(0),
+            w13_scale_src.unsqueeze(0),
+            w2_scale_src.unsqueeze(0),
+            w13_scale_bias_raw.unsqueeze(0),
             tensors[_W2_SCALE_BIAS_SUFFIX].unsqueeze(0),
         )
         return tuple(x[0] for x in processed)
@@ -278,11 +282,12 @@ def _assemble_expert(
 
     method = getattr(routed.quant_method, "quant_method", routed.quant_method)
     _, _, w13_scale, w2_scale, _, _, _ = method._process_w8a8_weights(
-        w13_raw.unsqueeze(0), w2_raw.unsqueeze(0),
-        w13_scale_src.unsqueeze(0), w2_scale_src.unsqueeze(0),
+        w13_raw.unsqueeze(0),
+        w2_raw.unsqueeze(0),
+        w13_scale_src.unsqueeze(0),
+        w2_scale_src.unsqueeze(0),
     )
     return w13, w2, w13_scale[0], w2_scale[0], None, None
-
 
 
 def _assemble_expert(
