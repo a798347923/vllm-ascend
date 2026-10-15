@@ -253,6 +253,68 @@ def _assemble_expert(
     tp_rank, tp_size = _tp_shard_info(routed)
     tensors = buckets[(layer_idx, logical_id)]
 
+    w13_raw = _gather_w13(tensors, tp_rank, tp_size)
+    w2_raw = _shard_col(tensors[_W2_WEIGHT_SUFFIX], tp_rank, tp_size)
+    w13_scale_src = _gather_w13_scale(tensors, tp_rank, tp_size)
+    w2_scale_src = tensors[_W2_SCALE_SUFFIX]
+
+    if w4a8:
+        method = getattr(routed.quant_method, "quant_method", routed.quant_method)
+        if method.quant_method == COMPRESSED_TENSORS_METHOD:
+            raise NotImplementedError("[FT] scale_down W4A8 weight reload does not support"
+                                      "COMPRESSED_TENSORS foemat yet.")
+        w13_scale_bias_raw = _gather_w13_scale_bias(routed, tp_rank, tp_size)
+        processed = method._process_modelslim_weights(
+            w13_raw.unsqueeze(0), w2_raw.unsqueeze(0), w13_scale_src.unsqueeze(0),
+            w2_scale_src.unsqueeze(0), w13_scale_bias_raw.unsqueeze(0),
+            tensors[_W2_SCALE_BIAS_SUFFIX].unsqueeze(0),
+        )
+        return tuple(x[0] for x in processed)
+
+    w13 = w13_raw.transpose(0, 1).contiguous()
+    w2 = w2_raw.transpose(0, 1).contiguous()
+    if not w8a8:
+        return w13, w2, None, None, None, None
+
+    method = getattr(routed.quant_method, "quant_method", routed.quant_method)
+    _, _, w13_scale, w2_scale, _, _, _ = method._process_w8a8_weights(
+        w13_raw.unsqueeze(0), w2_raw.unsqueeze(0),
+        w13_scale_src.unsqueeze(0), w2_scale_src.unsqueeze(0),
+    )
+    return w13, w2, w13_scale[0], w2_scale[0], None, None
+
+
+
+def _assemble_expert(
+    pair: tuple[int, int],
+    routed_layers: list,
+    buckets: dict[tuple[int, int], dict[str, torch.Tensor]],
+    quant_type: type,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+]:
+    """CPU assembly of one expert's (w13, w2, w13_scale, w2_scale,
+    w13_scale_bias, w2_scale_bias); thread-safe (read-only shared state).
+
+    Scales/scale_bias are None for the unquantized scheme; the w2 scale is a
+    view into its bucket (callers must not write it). Mirrors the relevant
+    ``process_weights_after_loading`` per-expert transforms (TP sharding is a
+    no-op under EP, which scale_down requires).
+    """
+    layer_idx, logical_id = pair
+    routed = routed_layers[layer_idx]
+    w8a8 = quant_type is AscendW8A8DynamicFusedMoEMethod
+    w4a8 = quant_type is AscendW4A8DynamicFusedMoEMethod
+    if getattr(routed, "w13_bias", None) is not None or getattr(routed, "w2_bias", None) is not None:
+        raise NotImplementedError("[FT] scale_down weight reload does not support MoE expert bias yet.")
+    tp_rank, tp_size = _tp_shard_info(routed)
+    tensors = buckets[(layer_idx, logical_id)]
+
     w13 = _gather_w13(tensors, tp_rank, tp_size).transpose(0, 1).contiguous()
     w2 = _shard_col(tensors[_W2_WEIGHT_SUFFIX], tp_rank, tp_size).transpose(0, 1).contiguous()
 
@@ -389,19 +451,15 @@ def _reload_chunk(
         device = first_layer.w13_weight.device
         w13_dtype, w2_dtype = first_layer.w13_weight.dtype, first_layer.w2_weight.dtype
 
-    if w8a8:
+    if has_scales:
         w13_batch = w13_batch.to(device=device)
         w2_batch = w2_batch.to(device=device)
         w13_scale_batch = w13_scale_batch.to(device=device, dtype=torch.float32)
         w2_scale_batch = w2_scale_batch.to(device=device)
-    elif w4a8:
-        # Weights int8, scales int64 (bit-reinterpreted), scale_bias fp32.
-        w13_batch = w13_batch.to(device=device)
-        w2_batch = w2_batch.to(device=device)
-        w13_scale_batch = w13_scale_batch.to(device=device)
-        w2_scale_batch = w2_scale_batch.to(device=device)
-        w13_scale_bias_batch = w13_scale_bias_batch.to(device=device, dtype=torch.float32)
-        w2_scale_bias_batch = w2_scale_bias_batch.to(device=device, dtype=torch.float32)
+        if w4a8:
+            # Weights int8, scales int64 (bit-reinterpreted), scale_bias fp32.
+            w13_scale_bias_batch = w13_scale_bias_batch.to(device=device, dtype=torch.float32)
+            w2_scale_bias_batch = w2_scale_bias_batch.to(device=device, dtype=torch.float32)
     else:
         # Whole-tensor layout policy; no-op when it does not force NZ.
         w13_batch = w13_batch.to(device=device, dtype=w13_dtype)
