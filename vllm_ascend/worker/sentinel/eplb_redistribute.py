@@ -3,9 +3,8 @@
 """NPU expert redistribution and weight reload for fault-tolerance scale-down.
 
 The reload deliberately does not degrade: a checkpoint, weight layout or quant
-scheme it cannot handle raises. Every fallback that used to sit here read the
-whole checkpoint, or wrote tensors that did not match the runtime layout, on
-paths that could not succeed anyway.
+scheme it cannot handle raises instead of falling back to a path that could not
+succeed anyway.
 """
 
 import glob
@@ -39,15 +38,15 @@ __all__ = [
     "reload_experts_from_disk",
 ]
 
-# Checkpoint name suffixes (relative to "<layer_name>.<expert_id>.") of the
-# tensors a reload may consume. weight_offset is loaded at startup but never
-# consumed by the MoE apply path, so it is not reloaded here.
+# Checkpoint suffixes (relative to "<layer_name>.<expert_id>.") of the tensors
+# a reload may consume. weight_offset is never read by the MoE apply path, so
+# it is not reloaded.
 _W13_WEIGHT_SUFFIXES = ("gate_up_proj.weight", "gate_proj.weight", "up_proj.weight")
 _W2_WEIGHT_SUFFIX = "down_proj.weight"
 _W13_SCALE_SUFFIXES = ("gate_up_proj.weight_scale", "gate_proj.weight_scale", "up_proj.weight_scale")
 _W2_SCALE_SUFFIX = "down_proj.weight_scale"
-# scale_bias is only present in the msModelSlim (modelslim / "ascend") format;
-# compressed_tensors computes it on the fly, so it simply never has these keys.
+# scale_bias exists only in the msModelSlim ("ascend") format; compressed_tensors
+# derives it on the fly, so those checkpoints have no such keys.
 _W13_SCALE_BIAS_SUFFIXES = ("gate_up_proj.scale_bias", "gate_proj.scale_bias", "up_proj.scale_bias")
 _W2_SCALE_BIAS_SUFFIX = "down_proj.scale_bias"
 
@@ -59,23 +58,13 @@ _WANTED_SUFFIXES = frozenset(
     + (_W2_WEIGHT_SUFFIX, _W2_SCALE_SUFFIX, _W2_SCALE_BIAS_SUFFIX)
 )
 
-# (layer, expert) pairs per chunk: a larger chunk amortises the device rounds
-# further but grows the stack's transient device memory.
+# (layer, expert) pairs per chunk: larger chunks amortise the device rounds
+# further but grow the transient stacked buffer.
 _RELOAD_CHUNK_SIZE = 32
 
 # Threads assembling one chunk; bounded because worker processes share host
 # memory bandwidth.
 _GATHER_MAX_WORKERS = 8
-
-
-def _get_ckpt_name_mapper(model: torch.nn.Module) -> Callable[[str], str]:
-    """Map raw checkpoint weight names into the model's runtime namespace."""
-    mapper = getattr(model, "hf_to_vllm_mapper", None)
-    if mapper is None:
-        # No declared mapping means the checkpoint stores weights under
-        # runtime names already (e.g. Qwen3-MoE), so identity is correct.
-        return lambda name: name
-    return lambda name: mapper._map_name(name) or name
 
 
 def build_orig_to_dense_rank_table(ep_world_size: int, dead_ranks: set[int]) -> torch.Tensor:
@@ -98,26 +87,17 @@ def densify_routing_table_physical_ids(
     orig_to_dense_rank: torch.Tensor,
     num_local_experts: int,
 ) -> None:
-    """Renumber a routing table's physical ids into the densified id space.
+    """Renumber one layer's ``expert_replica_routing_table`` into the densified id space.
 
-    In scale-down mode the MC2 dispatch kernel computes a token's destination
-    as ``table2[expert_id // num_local]`` and the combine kernel drops any id
-    >= the shrunk physical expert count, so the ids produced by the EPLB
-    mapping must be dense-rank-major: ``dense_rank * num_local + slot``.
-    Keeping original ids only works when the dead ranks happen to be a suffix
-    (then table2 is the identity on the alive prefix); a dead rank in the
-    middle misroutes tokens or crashes the kernel on a -1 rank lookup.
+    In scale-down mode the MC2 dispatch kernel indexes
+    ``table2[expert_id // num_local]`` and the combine kernel drops ids beyond
+    the shrunk expert count, so ids must be dense-rank-major:
+    ``dense_rank * num_local + slot``. Original ids only work when the dead
+    ranks form a suffix; a dead rank in the middle misroutes tokens or crashes
+    on the -1 rank lookup.
 
     The update is an in-place ``copy_`` with an unchanged shape, so captured
     graphs keep pointing at valid storage.
-
-    Args:
-        routing_table: ``expert_replica_routing_table`` of one MoE layer
-            (device, int32), holding original global physical ids.
-        orig_to_dense_rank: ``[ep_world_size]`` original EP rank -> densified
-            rank (-1 for dead ranks), i.e. elastic_info's table1.
-        num_local_experts: physical slots per EP rank (unchanged by
-            scale-down).
     """
     ids = routing_table.to(torch.int64)
     if bool((ids < 0).any()):
@@ -136,12 +116,6 @@ def densify_routing_table_physical_ids(
     routing_table.copy_(dense_ids.to(routing_table.dtype))
 
 
-def _tp_shard_info(layer) -> tuple[int, int]:
-    """(tp_rank, tp_size) of the MoE weights of a routed-experts module."""
-    parallel_config = layer.moe_config.moe_parallel_config
-    return parallel_config.tp_rank, parallel_config.tp_size
-
-
 def _shard_row(t: torch.Tensor, tp_rank: int, tp_size: int) -> torch.Tensor:
     """Take this TP rank's row shard (dim 0) of a full checkpoint tensor."""
     if tp_size == 1:
@@ -158,10 +132,10 @@ def _shard_col(t: torch.Tensor, tp_rank: int, tp_size: int) -> torch.Tensor:
     return t.narrow(1, tp_rank * shard, shard)
 
 
-# A recipe lands one runtime attribute: ``post(source(tensors, tp_rank, tp_size))``.
-# The two halves are independent axes -- where the numbers come from in the
-# checkpoint, and what the runtime wants done to them -- so a scheme picks one
-# of each instead of needing one function per (scheme, attribute) pair.
+# A recipe builds one runtime attribute as ``post(source(tensors, tp_rank, tp_size))``.
+# Source and post are independent axes (where the numbers come from vs. what the
+# runtime wants), so schemes compose them instead of enumerating
+# (scheme, attribute) pairs.
 _Source = Callable[[dict[str, torch.Tensor], int, int], torch.Tensor]
 _Post = Callable[[torch.Tensor], torch.Tensor]
 _Recipe = tuple[_Source, _Post]
@@ -169,11 +143,7 @@ _Recipe = tuple[_Source, _Post]
 
 # Sources: the checkpoint-side gather for one expert, sharded for this TP rank.
 def _gate_up(suffix: str) -> _Source:
-    """w13 order out of the checkpoint: fused ``gate_up_proj``, or split gate+up.
-
-    Either way each half is row-sharded and the two are concatenated
-    gate-first.
-    """
+    """w13 order out of the checkpoint: fused ``gate_up_proj``, or split gate+up."""
 
     def source(tensors: dict[str, torch.Tensor], tp_rank: int, tp_size: int) -> torch.Tensor:
         fused = tensors.get(f"gate_up_proj.{suffix}")
@@ -187,11 +157,7 @@ def _gate_up(suffix: str) -> _Source:
 
 
 def _down_proj(suffix: str, *, shard: bool = False) -> _Source:
-    """``down_proj.<suffix>`` as this rank holds it.
-
-    Only the weight's input dim is split by TP; the scale is per output channel
-    and scale_bias is grouped per rank already, so both are taken whole.
-    """
+    """``down_proj.<suffix>`` as this rank holds it."""
 
     def source(tensors: dict[str, torch.Tensor], tp_rank: int, tp_size: int) -> torch.Tensor:
         tensor = tensors[f"down_proj.{suffix}"]
@@ -200,18 +166,7 @@ def _down_proj(suffix: str, *, shard: bool = False) -> _Source:
     return source
 
 
-def _slot_tensor(layer: torch.nn.Module, attr: str, slot: int) -> torch.Tensor:
-    """The runtime storage of one per-slot tensor.
-
-    EPLB layouts keep a per-slot ``<attr>_list``, the whole-tensor layout slices
-    dim 0 of ``<attr>``. The two are mutually exclusive -- a scheme ``delattr``s
-    the base name as it builds the list -- so this is unambiguous.
-    """
-    per_slot = getattr(layer, f"{attr}_list", None)
-    return per_slot[slot] if per_slot is not None else getattr(layer, attr).data[slot]
-
-
-# Posts: the gathered checkpoint tensor -> the shape/dtype the runtime slot holds.
+# Posts: the gathered checkpoint tensor -> the representation the runtime slot holds.
 def _runtime_weight(weight: torch.Tensor) -> torch.Tensor:
     """Checkpoint ``[out, in]`` -> the runtime's ``[in, out]``."""
     return weight.transpose(0, 1).contiguous()
@@ -223,17 +178,14 @@ def _flatten(t: torch.Tensor) -> torch.Tensor:
 
 
 def _reinterpret_fp32_to_int64(t: torch.Tensor) -> torch.Tensor:
-    """Bit-preserving fp32 -> int64 cast (raw scale bits stored as int64).
-
-    Mirrors ``AscendW4A8DynamicFusedMoEMethod._process_scale``'s
-    reinterpretation; the shape is preserved, so the caller reshapes."""
+    """Bit-preserving fp32 -> int64 cast (raw scale bits stored as int64)."""
     arr = t.cpu().numpy()
     arr.dtype = np.uint32
     return torch.from_numpy(arr.astype(np.int64))
 
 
 def _bits(scale: torch.Tensor) -> torch.Tensor:
-    """Flat int64 bit pattern of an fp32 scale (see ``_reinterpret_fp32_to_int64``)."""
+    """Flat int64 bit pattern of an fp32 scale."""
     return _reinterpret_fp32_to_int64(scale.to(torch.float32).view(-1))
 
 
@@ -265,12 +217,11 @@ _WEIGHT_RECIPES: dict[str, _Recipe] = {
 }
 _WEIGHT_ATTRS = tuple(_WEIGHT_RECIPES)
 
-# What each scheme reloads: runtime attribute -> recipe. The attributes are the
-# runtime storage names, which is what lets assembly, H2D, layout cast and
-# scatter all be driven off this one table: adding a tensor to a scheme means
-# one entry here and nothing else. Each recipe mirrors the matching
-# ``process_weights_after_loading`` transform (TP sharding is a no-op under EP,
-# which scale_down requires).
+# scheme -> {runtime attribute: recipe}. Keys are runtime storage names, so
+# assembly, H2D, layout cast and scatter are all driven off this one table:
+# adding a tensor to a scheme means one entry here. Each recipe mirrors the
+# matching ``process_weights_after_loading`` transform (TP sharding is a no-op
+# under EP, which scale_down requires).
 _SCHEME_RECIPES: dict[_Scheme, dict[str, _Recipe]] = {
     (AscendUnquantizedFusedMoEMethod, None): _WEIGHT_RECIPES,
     (AscendW8A8DynamicFusedMoEMethod, None): _WEIGHT_RECIPES
@@ -324,6 +275,23 @@ def _resolve_scheme(routed: torch.nn.Module) -> tuple[_Scheme, dict[str, _Recipe
     return scheme, recipes
 
 
+def _tp_shard_info(layer) -> tuple[int, int]:
+    """(tp_rank, tp_size) of the MoE weights of a routed-experts module."""
+    parallel_config = layer.moe_config.moe_parallel_config
+    return parallel_config.tp_rank, parallel_config.tp_size
+
+
+def _slot_tensor(layer: torch.nn.Module, attr: str, slot: int) -> torch.Tensor:
+    """The runtime storage of one per-slot tensor.
+
+    EPLB layouts keep a per-slot ``<attr>_list``, the whole-tensor layout slices
+    dim 0 of ``<attr>``. The two are mutually exclusive -- a scheme ``delattr``s
+    the base name as it builds the list -- so this is unambiguous.
+    """
+    per_slot = getattr(layer, f"{attr}_list", None)
+    return per_slot[slot] if per_slot is not None else getattr(layer, attr).data[slot]
+
+
 def _assemble_expert(
     pair: tuple[int, int],
     routed_layers: list,
@@ -333,8 +301,8 @@ def _assemble_expert(
     """CPU assembly of one expert's tensors, keyed by runtime attribute.
 
     Thread-safe (reads only shared state). The keys come from
-    ``_SCHEME_RECIPES``, so they are exactly the per-slot attributes the chunk
-    engine has to write back.
+    ``_SCHEME_RECIPES``, exactly the per-slot attributes the chunk engine
+    writes back.
     """
     routed = routed_layers[pair[0]]
     tp_rank, tp_size = _tp_shard_info(routed)
@@ -349,12 +317,11 @@ def _reload_local_slots(
 ) -> int:
     """Reload all local (layer, expert) pairs in scheme-uniform chunks.
 
-    Entries are grouped by (scheme, per-slot layout) so each stacked chunk is
-    shape- and dtype-uniform, e.g. DeepSeek-V4 43-layers, 8 experts to reload,
-    344 pairs become ceil(344 / 32) = 11 chunks instead of 344 per-expert
-    reloads. The layout is read off the runtime slots the scheme declares, so a
-    new scheme -- or one extra tensor on an existing one -- needs no change
-    here and cannot share a chunk with an incompatible layout.
+    Pairs are grouped by (scheme, per-slot layout) so every stacked chunk is
+    shape- and dtype-uniform: e.g. 344 pairs become 11 chunks instead of 344
+    per-expert reloads. The layout is read off the runtime slots, so a new
+    scheme needs no change here and can never share a chunk with an
+    incompatible layout.
     """
     groups: dict[tuple, list[tuple[int, int]]] = {}
     for (layer_idx, logical_id), slot in sorted(local_slots.items()):
@@ -388,15 +355,10 @@ def _reload_chunk(
 ) -> int:
     """Apply one chunk of pairs sharing a scheme and per-slot layout.
 
-    Assemble the chunk on the CPU in parallel, then pay one H2D and one layout
-    cast per tensor for the whole stack, and scatter it with one non-blocking
-    copy per slot, drained by a single sync. Per pair that replaces a CPU
-    transpose-copy plus its own H2D, cast and scatter.
-
-    Everything below the assembly is driven by the recipes the scheme declares,
-    so a scheme only decides how each attribute is produced: stacking,
-    transfer, layout cast and scatter are identical for all of them. Shapes and
-    dtypes must match across the chunk (see ``_reload_local_slots``).
+    Assemble the chunk in parallel on the CPU, then pay one H2D and one layout
+    cast per attribute for the whole stack, and scatter with one non-blocking
+    copy per slot drained by a single sync -- instead of a transpose-copy, H2D,
+    cast and scatter per pair.
     """
     # CPU phase: assemble pairs in parallel (read-only shared state).
     assemble = partial(_assemble_expert, routed_layers=routed_layers, buckets=buckets, recipes=recipes)
@@ -404,10 +366,9 @@ def _reload_chunk(
         per_expert = list(pool.map(assemble, pairs))
     attrs = list(recipes)
 
-    # Device phase: one H2D and one layout cast per attribute, for the whole
-    # stack. Landing at the dtype the runtime slot already holds covers every
-    # scheme: int8 weights, the fp32 W8A8 w13 scale, and W4A8's int64
-    # bit-reinterpreted scales with its fp32 scale_bias.
+    # Device phase: one H2D and one layout cast per attribute for the whole
+    # stack. Landing at the slot's dtype covers every scheme: int8 weights, the
+    # fp32 W8A8 scale, W4A8's int64 bit scales and fp32 scale_bias.
     first_layer = routed_layers[pairs[0][0]]
     first_slot = local_slots[pairs[0]]
     landed: dict[str, torch.Tensor] = {}
@@ -425,6 +386,16 @@ def _reload_chunk(
             _slot_tensor(layer, attr, slot).copy_(landed[attr][i], non_blocking=True)
     torch.npu.synchronize()
     return len(pairs)
+
+
+def _get_ckpt_name_mapper(model: torch.nn.Module) -> Callable[[str], str]:
+    """Map raw checkpoint weight names into the model's runtime namespace."""
+    mapper = getattr(model, "hf_to_vllm_mapper", None)
+    if mapper is None:
+        # No declared mapping means the checkpoint stores weights under
+        # runtime names already (e.g. Qwen3-MoE), so identity is correct.
+        return lambda name: name
+    return lambda name: mapper._map_name(name) or name
 
 
 def _resolve_expert_tensor(
@@ -468,8 +439,7 @@ def _collect_safetensors_shards(vllm_config: VllmConfig, model: torch.nn.Module)
     shards = [shard for shard in shards if shard.endswith(".safetensors")]
     if len(shards) > 1:
         # Sharded and consolidated safetensors can coexist; the index file
-        # records which set the model actually loads. It ships with the
-        # checkpoint, and the filter no-ops without it.
+        # selects the set the model loads (the filter no-ops without one).
         shards = filter_duplicate_safetensors_files(shards, model_path, SAFE_WEIGHTS_INDEX_NAME)
     return sorted(shards)
 
@@ -509,8 +479,8 @@ def reload_experts_from_disk(
 
     Ascend keeps expert weights in runtime layout (transposed, NZ-cast,
     per-slot lists, derived quant scales), so ``model.load_weights`` cannot
-    write them back. Only reassigned experts whose replica lands in this
-    rank's physical block are reloaded, into the slot given by
+    write them back. Only reassigned experts landing in this rank's physical
+    block are reloaded, into the slot given by
     ``eplb_state.logical_to_physical_map`` -- hence the call must follow the
     upstream ``rebuild_model_expert_maps``.
     """
