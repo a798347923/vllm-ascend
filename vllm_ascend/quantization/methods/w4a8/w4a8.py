@@ -43,19 +43,19 @@ from ..registry import register_scheme
 
 
 def reduce_scale_bias_modelslim(scale_bias: torch.Tensor) -> torch.Tensor:
-    """Sum out the modelslim group dim: ``[..., out, group]`` -> ``[..., out]``."""
+    """Sum modelslim's per-group scale_bias into one value per output channel."""
     return scale_bias.transpose(-2, -1).contiguous().sum(-2)
 
 
 def process_scale_to_runtime(scale: torch.Tensor) -> torch.Tensor:
-    """Checkpoint ``[..., I, 1]`` -> runtime int64 scale bits ``[..., 1, I]`` (CPU)."""
+    """Convert a checkpoint scale into the transposed int64 bit pattern npu_grouped_matmul reads (CPU)."""
     scale_np = scale.transpose(-2, -1).to(torch.float32).contiguous().cpu().numpy()
     scale_np.dtype = np.uint32
     return torch.from_numpy(scale_np.astype(np.int64))
 
 
 def w13_scale_to_runtime(scale: torch.Tensor) -> torch.Tensor:
-    """Per-channel w13 scale -> the flat int64-bit form the runtime slots hold (CPU)."""
+    """Convert w13's per-channel scale into flat int64 bits with the group dim squeezed (CPU)."""
     scale = process_scale_to_runtime(scale)
     if scale.dim() > 1 and scale.shape[1] == 1:
         scale = scale.squeeze(1)

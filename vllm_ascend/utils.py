@@ -387,7 +387,7 @@ def _should_trans_nz(weight: torch.Tensor) -> bool:
 
 
 def transpose_weight_to_runtime(weight: torch.Tensor) -> torch.Tensor:
-    """Checkpoint ``[..., out, in]`` -> runtime ``[..., in, out]``."""
+    """Swap the last two dims into the NPU runtime layout."""
     return weight.transpose(-2, -1).contiguous()
 
 

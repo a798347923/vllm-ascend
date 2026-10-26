@@ -58,7 +58,7 @@ def scale_from_float_to_int64(scale):
 
 
 def flatten_expert_dims(tensor: torch.Tensor) -> torch.Tensor:
-    """Flatten trailing dims: ``[E, ...]`` -> ``[E, -1]``."""
+    """Flatten each expert's weights into a single dim, keeping the expert axis."""
     return tensor.view(tensor.shape[0], -1)
 
 
