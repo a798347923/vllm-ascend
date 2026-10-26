@@ -58,11 +58,7 @@ def scale_from_float_to_int64(scale):
 
 
 def flatten_expert_dims(tensor: torch.Tensor) -> torch.Tensor:
-    """[E, ...] -> [E, -1]: the per-expert flat shape the runtime slots hold.
-
-    Shared by load time and the FT scale-down expert reload, which feeds it a
-    chunk of experts stacked along the leading dim.
-    """
+    """Flatten trailing dims: ``[E, ...]`` -> ``[E, -1]``."""
     return tensor.view(tensor.shape[0], -1)
 
 

@@ -43,39 +43,26 @@ from ..registry import register_scheme
 
 
 def scale_to_int64_bits(scale: torch.Tensor) -> torch.Tensor:
-    """Coerce to fp32 and reinterpret the 4-byte scale bits as int64, shape preserved (CPU).
-
-    Shared by load time and the FT scale-down expert reload: the runtime stores
-    per-channel scales as int64 raw bits for npu_grouped_matmul. Device
-    placement is the caller's job.
-    """
+    """Reinterpret fp32 scale bits as int64 raw bits for ``npu_grouped_matmul`` (CPU)."""
     arr = scale.to(torch.float32).contiguous().cpu().numpy()
     arr.dtype = np.uint32
     return torch.from_numpy(arr.astype(np.int64))
 
 
 def reduce_scale_bias_modelslim(scale_bias: torch.Tensor) -> torch.Tensor:
-    """modelslim scale_bias: sum out the group dim, [..., out, group] -> [..., out].
-
-    Works on a whole layer ([E, out, group]) and on one expert ([out, group]),
-    so load time and the scale-down expert reload share it.
-    """
+    """Sum out the modelslim group dim: ``[..., out, group]`` -> ``[..., out]``."""
     return scale_bias.transpose(-2, -1).contiguous().sum(-2)
 
 
 def maybe_squeeze_per_channel_weight_scale(scale: torch.Tensor) -> torch.Tensor:
-    """Drop the per-channel group dim when it is a singleton, [..., 1, I] -> [..., I]."""
+    """Squeeze a singleton group dim: ``[..., 1, I]`` -> ``[..., I]``."""
     if scale.dim() > 1 and scale.shape[1] == 1:
         return scale.squeeze(1)
     return scale
 
 
 def process_scale_to_runtime(scale: torch.Tensor) -> torch.Tensor:
-    """Checkpoint [..., I, 1] -> runtime [..., 1, I] int64 scale bits (CPU).
-
-    The trailing 1 is the per-channel group dim; the transpose mirrors how the
-    weights are laid out at runtime. Device placement is the caller's job.
-    """
+    """Checkpoint ``[..., I, 1]`` -> runtime int64 scale bits ``[..., 1, I]`` (CPU)."""
     return scale_to_int64_bits(scale.transpose(-2, -1))
 
 
@@ -388,7 +375,7 @@ class AscendW4A8DynamicFusedMoEMethod(AscendMoEScheme):
         w2_scale_bias = torch.nn.Parameter(w2_bias, requires_grad=False)
         layer.register_parameter("w2_scale_bias", w2_scale_bias)
 
-        # To use torch_npu.npu_grouped_matmul, keep w2_weigh_scale unsqueezed
+        # Keep w2's scale unsqueezed for npu_grouped_matmul.
         layer.w13_weight_scale.data = w13_scale_to_runtime(layer.w13_weight_scale.data).npu()
         layer.w2_weight_scale.data = process_scale_to_runtime(layer.w2_weight_scale.data).npu()
 
@@ -582,7 +569,7 @@ class AscendW4A8DynamicFusedMoEMethod(AscendMoEScheme):
         layer.w13_weight.data = transpose_weight_to_runtime(layer.w13_weight.data)
         layer.w2_weight.data = transpose_weight_to_runtime(layer.w2_weight.data)
 
-        # To use torch_npu.npu_grouped_matmul, keep w2_weigh_scale unsqueezed
+        # Keep w2's scale unsqueezed for npu_grouped_matmul.
         layer.w13_weight_scale.data = w13_scale_to_runtime(layer.w13_weight_scale.data).npu()
         layer.w2_weight_scale.data = process_scale_to_runtime(layer.w2_weight_scale.data).npu()
 
