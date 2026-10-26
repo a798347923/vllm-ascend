@@ -42,33 +42,24 @@ from ..base import AscendMoEScheme, QuantType
 from ..registry import register_scheme
 
 
-def scale_to_int64_bits(scale: torch.Tensor) -> torch.Tensor:
-    """Reinterpret fp32 scale bits as int64 raw bits for ``npu_grouped_matmul`` (CPU)."""
-    arr = scale.to(torch.float32).contiguous().cpu().numpy()
-    arr.dtype = np.uint32
-    return torch.from_numpy(arr.astype(np.int64))
-
-
 def reduce_scale_bias_modelslim(scale_bias: torch.Tensor) -> torch.Tensor:
     """Sum out the modelslim group dim: ``[..., out, group]`` -> ``[..., out]``."""
     return scale_bias.transpose(-2, -1).contiguous().sum(-2)
 
 
-def maybe_squeeze_per_channel_weight_scale(scale: torch.Tensor) -> torch.Tensor:
-    """Squeeze a singleton group dim: ``[..., 1, I]`` -> ``[..., I]``."""
-    if scale.dim() > 1 and scale.shape[1] == 1:
-        return scale.squeeze(1)
-    return scale
-
-
 def process_scale_to_runtime(scale: torch.Tensor) -> torch.Tensor:
     """Checkpoint ``[..., I, 1]`` -> runtime int64 scale bits ``[..., 1, I]`` (CPU)."""
-    return scale_to_int64_bits(scale.transpose(-2, -1))
+    scale_np = scale.transpose(-2, -1).to(torch.float32).contiguous().cpu().numpy()
+    scale_np.dtype = np.uint32
+    return torch.from_numpy(scale_np.astype(np.int64))
 
 
 def w13_scale_to_runtime(scale: torch.Tensor) -> torch.Tensor:
     """Per-channel w13 scale -> the flat int64-bit form the runtime slots hold (CPU)."""
-    return maybe_squeeze_per_channel_weight_scale(process_scale_to_runtime(scale))
+    scale = process_scale_to_runtime(scale)
+    if scale.dim() > 1 and scale.shape[1] == 1:
+        scale = scale.squeeze(1)
+    return scale
 
 
 @register_scheme("W4A8_DYNAMIC", "moe")
