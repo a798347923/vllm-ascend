@@ -183,6 +183,9 @@ def _resolve_scheme(routed: torch.nn.Module) -> _ReloadScheme:
     for scheme in _SCHEMES:
         if scheme.matches(method):
             return scheme
+    hint = f"checkpoint sub-format: {getattr(method, 'quant_method', None) or 'unknown'}"
+    if isinstance(method, AscendW4A8DynamicFusedMoEMethod):
+        hint += f'; only msModelSlim ("{ASCEND_QUANTIZATION_METHOD}") is supported'
     raise NotImplementedError(
-        f"[FT] scale_down weight reload is not implemented for quant method {type(method).__name__}."
+        f"[FT] scale_down weight reload is not implemented for quant method {type(method).__name__} ({hint})."
     )
